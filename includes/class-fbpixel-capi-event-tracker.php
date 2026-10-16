@@ -31,6 +31,11 @@ class FBPixel_CAPI_Event_Tracker {
      * Browser-side events queue (for Pixel)
      */
     private $browser_events = array();
+
+    /**
+     * Stashed AJAX event data for cart fragments
+     */
+    private $last_ajax_event = null;
     
     /**
      * Constructor
@@ -47,7 +52,7 @@ class FBPixel_CAPI_Event_Tracker {
      * Queues browser event and dispatches to CAPI non-blockingly via public.js
      */
     public function track_page_view() {
-        if (!$this->is_event_enabled('PageView')) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('PageView')) {
             return;
         }
         
@@ -74,7 +79,7 @@ class FBPixel_CAPI_Event_Tracker {
      * Track ViewContent event (WooCommerce product pages)
      */
     public function track_view_content() {
-        if (!$this->is_event_enabled('ViewContent') || !class_exists('WooCommerce') || !is_product()) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('ViewContent') || !class_exists('WooCommerce') || !is_product()) {
             return;
         }
         
@@ -139,7 +144,7 @@ class FBPixel_CAPI_Event_Tracker {
      * @param int $variation_id Variation ID (optional)
      */
     public function track_add_to_cart($product_id, $quantity = 1, $variation_id = 0) {
-        if (!$this->is_event_enabled('AddToCart') || !class_exists('WooCommerce')) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('AddToCart') || !class_exists('WooCommerce')) {
             return;
         }
         
@@ -175,9 +180,35 @@ class FBPixel_CAPI_Event_Tracker {
             'event_id'         => $event_id
         );
 
-        // Store in session for browser pickup on redirect
-        $this->queue_browser_event($event_data, true, false);
-        $this->send_event($event_data);
+        $is_ajax = (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_REQUEST['wc-ajax']);
+
+        if ($is_ajax) {
+            // For AJAX AddToCart: Send CAPI directly now and relay matching event_id to browser via cart fragments
+            $this->send_event($event_data);
+            $this->last_ajax_event = $event_data;
+            add_filter('woocommerce_add_to_cart_fragments', array($this, 'add_cart_fragment_event'), 20);
+        } else {
+            // Store in session for browser pickup on redirect/reload
+            $this->queue_browser_event($event_data, true, false);
+            $this->send_event($event_data);
+        }
+    }
+
+    /**
+     * Pass synchronized Facebook Pixel event into WooCommerce AJAX fragments
+     *
+     * @param array $fragments
+     * @return array
+     */
+    public function add_cart_fragment_event($fragments) {
+        if (!empty($this->last_ajax_event)) {
+            $fragments['w3_fbpixel_event'] = array(
+                'event_name'  => $this->last_ajax_event['event_name'],
+                'event_id'    => $this->last_ajax_event['event_id'],
+                'custom_data' => $this->last_ajax_event['custom_data']
+            );
+        }
+        return $fragments;
     }
     
     /**
@@ -223,13 +254,13 @@ class FBPixel_CAPI_Event_Tracker {
 
         $event_data = $this->build_purchase_event_data($order, $event_id);
 
-        // Always queue browser event with the exact same event_id
-        $this->queue_browser_event($event_data, false, false);
-
-        // Send CAPI Purchase only if not already fired by a webhook or previous load
+        // Only fire if not already tracked (prevents duplicates on thank you page reloads)
         if (!$already_fired) {
             $order->update_meta_data('_w3_purchase_event_fired', '1');
             $order->save();
+
+            // Queue browser event with the exact same event_id
+            $this->queue_browser_event($event_data, false, false);
             $this->send_event($event_data);
         }
     }
@@ -355,10 +386,19 @@ class FBPixel_CAPI_Event_Tracker {
     }
     
     /**
+     * Flag to prevent duplicate InitiateCheckout event in the same request
+     */
+    private $initiate_checkout_fired = false;
+
+    /**
      * Track InitiateCheckout event (WooCommerce)
      */
     public function track_initiate_checkout() {
-        if (!$this->is_event_enabled('InitiateCheckout') || !class_exists('WooCommerce')) {
+        if ($this->initiate_checkout_fired) {
+            return;
+        }
+
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('InitiateCheckout') || !class_exists('WooCommerce')) {
             return;
         }
         
@@ -366,6 +406,8 @@ class FBPixel_CAPI_Event_Tracker {
         if (!$cart || $cart->is_empty()) {
             return;
         }
+
+        $this->initiate_checkout_fired = true;
         
         $content_ids = array();
         $contents = array();
@@ -574,13 +616,23 @@ class FBPixel_CAPI_Event_Tracker {
      * @return array User data
      */
     private function get_user_data_from_order($order) {
+        // Retrieve locked cookies & customer tech info from order meta
+        $fb_cookies = FBPixel_CAPI_Helpers::get_fb_cookies_from_order($order);
+
+        $client_user_agent = !empty($fb_cookies['user_agent']) ? $fb_cookies['user_agent'] : FBPixel_CAPI_Helpers::get_user_agent();
+        $client_ip = $order->get_customer_ip_address();
+        if (empty($client_ip) && !empty($fb_cookies['ip'])) {
+            $client_ip = $fb_cookies['ip'];
+        }
+        if (empty($client_ip)) {
+            $client_ip = FBPixel_CAPI_Helpers::get_client_ip();
+        }
+
         $user_data = array(
-            'client_ip_address' => $order->get_customer_ip_address(),
-            'client_user_agent' => FBPixel_CAPI_Helpers::get_user_agent()
+            'client_ip_address' => $client_ip,
+            'client_user_agent' => $client_user_agent
         );
         
-        // Retrieve locked cookies from order meta
-        $fb_cookies = FBPixel_CAPI_Helpers::get_fb_cookies_from_order($order);
         if (!empty($fb_cookies['fbc'])) {
             $user_data['fbc'] = $fb_cookies['fbc'];
         }
@@ -594,14 +646,19 @@ class FBPixel_CAPI_Event_Tracker {
             $user_data['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_email);
         }
         
+        $billing_country = $order->get_billing_country();
+        if (!empty($billing_country)) {
+            $user_data['country'] = FBPixel_CAPI_Helpers::normalize_country($billing_country);
+        }
+
         $billing_first_name = $order->get_billing_first_name();
         if (!empty($billing_first_name)) {
-            $user_data['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_first_name);
+            $user_data['fn'] = FBPixel_CAPI_Helpers::normalize_name($billing_first_name);
         }
         
         $billing_last_name = $order->get_billing_last_name();
         if (!empty($billing_last_name)) {
-            $user_data['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_last_name);
+            $user_data['ln'] = FBPixel_CAPI_Helpers::normalize_name($billing_last_name);
         }
 
         $billing_phone = $order->get_billing_phone();
@@ -611,22 +668,17 @@ class FBPixel_CAPI_Event_Tracker {
         
         $billing_city = $order->get_billing_city();
         if (!empty($billing_city)) {
-            $user_data['ct'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_city);
+            $user_data['ct'] = FBPixel_CAPI_Helpers::normalize_city($billing_city);
         }
         
         $billing_state = $order->get_billing_state();
         if (!empty($billing_state)) {
-            $user_data['st'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_state);
+            $user_data['st'] = FBPixel_CAPI_Helpers::normalize_state($billing_state);
         }
         
         $billing_postcode = $order->get_billing_postcode();
         if (!empty($billing_postcode)) {
-            $user_data['zp'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_postcode);
-        }
-        
-        $billing_country = $order->get_billing_country();
-        if (!empty($billing_country)) {
-            $user_data['country'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_country);
+            $user_data['zp'] = FBPixel_CAPI_Helpers::normalize_zip($billing_postcode, $billing_country);
         }
 
         $customer_id = $order->get_customer_id();

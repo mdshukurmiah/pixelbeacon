@@ -102,6 +102,23 @@ class FBPixel_CAPI_Admin {
             'fbpixel-capi-settings',
             'fbpixel_capi_debug_section'
         );
+
+        // Privacy Section
+        add_settings_section(
+            'fbpixel_capi_privacy_section',
+            __('Privacy & Compliance', 'w3-pixel-capi'),
+            array($this, 'privacy_section_callback'),
+            'fbpixel-capi-settings'
+        );
+
+        // Limited Data Use field
+        add_settings_field(
+            'enable_ldu',
+            __('Limited Data Use (LDU)', 'w3-pixel-capi'),
+            array($this, 'enable_ldu_callback'),
+            'fbpixel-capi-settings',
+            'fbpixel_capi_privacy_section'
+        );
     }
     
     /**
@@ -138,8 +155,10 @@ class FBPixel_CAPI_Admin {
                     <h2><?php esc_html_e('Test Connection', 'w3-pixel-capi'); ?></h2>
                     <p><?php esc_html_e('Test your Conversions API connection to ensure everything is working correctly.', 'w3-pixel-capi'); ?></p>
                     
-                    <form method="post" style="display:inline-block; margin-right: 10px;">
+                    <form method="post" id="fbpixel_test_connection_form" style="display:inline-block; margin-right: 10px;">
                         <?php wp_nonce_field('fbpixel_capi_test_connection', 'fbpixel_capi_test_nonce'); ?>
+                        <input type="hidden" name="test_pixel_id" id="test_pixel_id" value="">
+                        <input type="hidden" name="test_access_token" id="test_access_token" value="">
                         <input type="submit" name="test_connection" class="button button-secondary" value="<?php esc_html_e('Test Connection', 'w3-pixel-capi'); ?>">
                     </form>
 
@@ -389,6 +408,28 @@ class FBPixel_CAPI_Admin {
         <p class="description"><?php esc_html_e('When enabled, detailed logs will be written to the WordPress debug log and database for troubleshooting.', 'w3-pixel-capi'); ?></p>
         <?php
     }
+
+    /**
+     * Privacy section callback
+     */
+    public function privacy_section_callback() {
+        echo '<p>' . esc_html__('Configure data processing and privacy compliance options.', 'w3-pixel-capi') . '</p>';
+    }
+
+    /**
+     * Limited Data Use (LDU) field callback
+     */
+    public function enable_ldu_callback() {
+        $settings = get_option(self::OPTION_NAME, array());
+        $value = !empty($settings['enable_ldu']);
+        ?>
+        <label>
+            <input type="checkbox" name="<?php echo esc_attr(self::OPTION_NAME); ?>[enable_ldu]" value="1" <?php checked($value); ?>>
+            <?php esc_html_e('Enable Meta Limited Data Use (LDU)', 'w3-pixel-capi'); ?>
+        </label>
+        <p class="description"><?php esc_html_e('Enables Limited Data Use mode for California Consumer Privacy Act (CCPA) compliance across Meta Conversions API events.', 'w3-pixel-capi'); ?></p>
+        <?php
+    }
     
     /**
      * Sanitize settings
@@ -446,6 +487,9 @@ class FBPixel_CAPI_Admin {
         
         // Sanitize Debug Mode
         $sanitized['debug_mode'] = !empty($input['debug_mode']);
+
+        // Sanitize Limited Data Use
+        $sanitized['enable_ldu'] = !empty($input['enable_ldu']);
         
         return $sanitized;
     }
@@ -465,9 +509,12 @@ class FBPixel_CAPI_Admin {
             return;
         }
         
-        // Test API connection
+        // Test API connection using form inputs if available, otherwise saved settings
+        $test_pixel_id = !empty($_POST['test_pixel_id']) ? sanitize_text_field($_POST['test_pixel_id']) : '';
+        $test_access_token = !empty($_POST['test_access_token']) ? sanitize_text_field($_POST['test_access_token']) : '';
+
         $api_client = new FBPixel_CAPI_API_Client();
-        $result = $api_client->test_connection();
+        $result = $api_client->test_connection($test_pixel_id, $test_access_token);
 		
         if (is_wp_error($result)) {
             add_settings_error(

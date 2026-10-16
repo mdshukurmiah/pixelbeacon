@@ -92,9 +92,25 @@ class FBPixel_CAPI_REST_API {
      * @return WP_REST_Response|WP_Error
      */
     public function handle_event($request) {
+        // Drop crawler and bot requests immediately
+        if (FBPixel_CAPI_Helpers::is_bot_request()) {
+            return new WP_REST_Response(array('success' => true, 'skipped' => 'bot_request'), 200);
+        }
+
         $event_name = $request->get_param('event_name');
         if (empty($event_name)) {
             return new WP_Error('missing_event_name', __('Event name is required', 'w3-pixel-capi'), array('status' => 400));
+        }
+
+        // Verify event is supported and enabled in plugin settings
+        $allowed_events = array('PageView', 'AddToCart', 'InitiateCheckout', 'Purchase', 'ViewContent', 'Search', 'Lead', 'CompleteRegistration');
+        if (!in_array($event_name, $allowed_events, true)) {
+            return new WP_Error('invalid_event_name', __('Event is not supported', 'w3-pixel-capi'), array('status' => 400));
+        }
+
+        $settings = get_option('fbpixel_capi_settings', array());
+        if (empty($settings['enabled_events'][$event_name])) {
+            return new WP_REST_Response(array('success' => true, 'skipped' => 'event_disabled'), 200);
         }
 
         // Capture or generate event ID
@@ -214,6 +230,11 @@ class FBPixel_CAPI_REST_API {
     public function handle_dynamic_options($request) {
         nocache_headers();
 
+        // Prevent cron loops when using ALTERNATE_WP_CRON
+        if (defined('ALTERNATE_WP_CRON') && ALTERNATE_WP_CRON) {
+            remove_action('init', 'wp_cron');
+        }
+
         // Restore logged in user manually if page is served from static cache without nonce
         if (!is_user_logged_in() && function_exists('wp_validate_auth_cookie')) {
             $cookie_user_id = wp_validate_auth_cookie('', 'logged_in');
@@ -229,10 +250,10 @@ class FBPixel_CAPI_REST_API {
                 $advanced_matching['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->user_email);
             }
             if (!empty($user->first_name)) {
-                $advanced_matching['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->first_name);
+                $advanced_matching['fn'] = FBPixel_CAPI_Helpers::normalize_name($user->first_name);
             }
             if (!empty($user->last_name)) {
-                $advanced_matching['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->last_name);
+                $advanced_matching['ln'] = FBPixel_CAPI_Helpers::normalize_name($user->last_name);
             }
             $advanced_matching['external_id'] = FBPixel_CAPI_Helpers::normalize_and_hash((string) $user->ID);
         } else {
@@ -241,10 +262,10 @@ class FBPixel_CAPI_REST_API {
                 $advanced_matching['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['em']);
             }
             if (!empty($persisted['fn'])) {
-                $advanced_matching['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['fn']);
+                $advanced_matching['fn'] = FBPixel_CAPI_Helpers::normalize_name($persisted['fn']);
             }
             if (!empty($persisted['ln'])) {
-                $advanced_matching['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['ln']);
+                $advanced_matching['ln'] = FBPixel_CAPI_Helpers::normalize_name($persisted['ln']);
             }
             if (!empty($persisted['ph'])) {
                 $advanced_matching['ph'] = FBPixel_CAPI_Helpers::normalize_and_hash_phone($persisted['ph']);

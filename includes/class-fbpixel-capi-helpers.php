@@ -209,7 +209,127 @@ class FBPixel_CAPI_Helpers {
         if ($digits === '') {
             return null;
         }
+        // Meta requirement: Strip leading zeros and include country code if possible
+        $digits = ltrim($digits, '0');
+        if ($digits === '') {
+            return null;
+        }
         return hash('sha256', $digits);
+    }
+
+    /**
+     * Normalize name field (first name / last name) according to Meta EMQ standards
+     *
+     * @param string $name
+     * @return string|null
+     */
+    public static function normalize_name($name) {
+        if ($name === null || $name === '') {
+            return null;
+        }
+        $name = trim((string) $name);
+        if ($name === '') {
+            return null;
+        }
+        if (self::is_sha256($name)) {
+            return strtolower($name);
+        }
+        // Remove special punctuation/characters but preserve Unicode letters
+        $name = preg_replace('/[^\w\p{L}]/u', '', $name);
+        if (function_exists('mb_strtolower')) {
+            $name = mb_strtolower($name, 'UTF-8');
+        } else {
+            $name = strtolower($name);
+        }
+        return $name !== '' ? hash('sha256', $name) : null;
+    }
+
+    /**
+     * Normalize city according to Meta EMQ standards (lowercase, remove spaces/punctuation)
+     *
+     * @param string $city
+     * @return string|null
+     */
+    public static function normalize_city($city) {
+        if ($city === null || $city === '') {
+            return null;
+        }
+        $city = trim((string) $city);
+        if ($city === '') {
+            return null;
+        }
+        if (self::is_sha256($city)) {
+            return strtolower($city);
+        }
+        $city = strtolower(preg_replace('/[^a-zA-Z]/', '', $city));
+        return $city !== '' ? hash('sha256', $city) : null;
+    }
+
+    /**
+     * Normalize state according to Meta EMQ standards
+     *
+     * @param string $state
+     * @return string|null
+     */
+    public static function normalize_state($state) {
+        if ($state === null || $state === '') {
+            return null;
+        }
+        $state = trim((string) $state);
+        if ($state === '') {
+            return null;
+        }
+        if (self::is_sha256($state)) {
+            return strtolower($state);
+        }
+        $state = strtolower(preg_replace('/[^a-zA-Z0-9]/', '', $state));
+        return $state !== '' ? hash('sha256', $state) : null;
+    }
+
+    /**
+     * Normalize zip / postcode according to Meta EMQ standards
+     *
+     * @param string $zip
+     * @param string $country
+     * @return string|null
+     */
+    public static function normalize_zip($zip, $country = '') {
+        if ($zip === null || $zip === '') {
+            return null;
+        }
+        $zip = trim((string) $zip);
+        if ($zip === '') {
+            return null;
+        }
+        if (self::is_sha256($zip)) {
+            return strtolower($zip);
+        }
+        $zip = strtolower(preg_replace('/[^a-zA-Z0-9]/', '', $zip));
+        if (strtolower($country) === 'us' && strlen($zip) > 5) {
+            $zip = substr($zip, 0, 5);
+        }
+        return $zip !== '' ? hash('sha256', $zip) : null;
+    }
+
+    /**
+     * Normalize country according to Meta EMQ standards (2-character lowercase ISO code)
+     *
+     * @param string $country
+     * @return string|null
+     */
+    public static function normalize_country($country) {
+        if ($country === null || $country === '') {
+            return null;
+        }
+        $country = trim((string) $country);
+        if ($country === '') {
+            return null;
+        }
+        if (self::is_sha256($country)) {
+            return strtolower($country);
+        }
+        $country = strtolower(substr(preg_replace('/[^a-zA-Z]/', '', $country), 0, 2));
+        return $country !== '' ? hash('sha256', $country) : null;
     }
     
     /**
@@ -242,18 +362,10 @@ class FBPixel_CAPI_Helpers {
             return sanitize_text_field(wp_unslash($_COOKIE['w3_pbid']));
         }
 
-        $ip = self::get_client_ip();
-        $transient_key = 'w3_pbid_' . md5($ip);
-        $cached = get_transient($transient_key);
-        if (!empty($cached)) {
-            return $cached;
-        }
-
         $random = bin2hex(random_bytes(16));
         $pbid = hash('sha256', $random);
 
         self::set_cookie('w3_pbid', $pbid, 365);
-        set_transient($transient_key, $pbid, 600);
 
         return $pbid;
     }
@@ -370,9 +482,17 @@ class FBPixel_CAPI_Helpers {
             }
         }
         
+        $country = $customer->get_billing_country();
+        if (!empty($country)) {
+            $hashed = self::normalize_country($country);
+            if ($hashed) {
+                $customer_data['country'] = $hashed;
+            }
+        }
+
         $first_name = $customer->get_first_name();
         if (!empty($first_name)) {
-            $hashed = self::normalize_and_hash($first_name);
+            $hashed = self::normalize_name($first_name);
             if ($hashed) {
                 $customer_data['fn'] = $hashed;
             }
@@ -380,7 +500,7 @@ class FBPixel_CAPI_Helpers {
         
         $last_name = $customer->get_last_name();
         if (!empty($last_name)) {
-            $hashed = self::normalize_and_hash($last_name);
+            $hashed = self::normalize_name($last_name);
             if ($hashed) {
                 $customer_data['ln'] = $hashed;
             }
@@ -396,7 +516,7 @@ class FBPixel_CAPI_Helpers {
         
         $city = $customer->get_billing_city();
         if (!empty($city)) {
-            $hashed = self::normalize_and_hash($city);
+            $hashed = self::normalize_city($city);
             if ($hashed) {
                 $customer_data['ct'] = $hashed;
             }
@@ -404,7 +524,7 @@ class FBPixel_CAPI_Helpers {
         
         $state = $customer->get_billing_state();
         if (!empty($state)) {
-            $hashed = self::normalize_and_hash($state);
+            $hashed = self::normalize_state($state);
             if ($hashed) {
                 $customer_data['st'] = $hashed;
             }
@@ -412,17 +532,9 @@ class FBPixel_CAPI_Helpers {
         
         $postcode = $customer->get_billing_postcode();
         if (!empty($postcode)) {
-            $hashed = self::normalize_and_hash($postcode);
+            $hashed = self::normalize_zip($postcode, $country);
             if ($hashed) {
                 $customer_data['zp'] = $hashed;
-            }
-        }
-        
-        $country = $customer->get_billing_country();
-        if (!empty($country)) {
-            $hashed = self::normalize_and_hash($country);
-            if ($hashed) {
-                $customer_data['country'] = $hashed;
             }
         }
         
@@ -442,8 +554,10 @@ class FBPixel_CAPI_Helpers {
         }
 
         $data = array(
-            'fbp' => self::ensure_fbp(),
-            'fbc' => self::ensure_fbc(),
+            'fbp'        => self::ensure_fbp(),
+            'fbc'        => self::ensure_fbc(),
+            'user_agent' => self::get_user_agent(),
+            'ip'         => self::get_client_ip(),
         );
 
         $order->update_meta_data('_w3_fb_cookie', $data);
@@ -479,9 +593,14 @@ class FBPixel_CAPI_Helpers {
             $fbc = self::get_facebook_click_id();
         }
 
+        $user_agent = !empty($saved['user_agent']) ? $saved['user_agent'] : '';
+        $ip = !empty($saved['ip']) ? $saved['ip'] : '';
+
         return array(
-            'fbp' => $fbp,
-            'fbc' => $fbc
+            'fbp'        => $fbp,
+            'fbc'        => $fbc,
+            'user_agent' => $user_agent,
+            'ip'         => $ip
         );
     }
     
@@ -563,11 +682,16 @@ class FBPixel_CAPI_Helpers {
      */
     public static function is_bot_request() {
         $user_agent = self::get_user_agent();
+        if (empty($user_agent)) {
+            return false;
+        }
         
         $bot_patterns = array(
             'bot', 'crawler', 'spider', 'scraper', 'curl', 'wget',
             'googlebot', 'bingbot', 'slurp', 'duckduckbot',
-            'baiduspider', 'yandexbot', 'facebookexternalhit'
+            'baiduspider', 'yandexbot', 'facebookexternalhit',
+            'sitemaps', 'feedfetcher', 'headlesschrome', 'lighthouse',
+            'petalbot', 'semrushbot', 'ahrefsbot'
         );
         
         foreach ($bot_patterns as $pattern) {

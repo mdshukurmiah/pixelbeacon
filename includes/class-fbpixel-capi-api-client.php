@@ -62,6 +62,13 @@ class FBPixel_CAPI_API_Client {
             'partner_agent' => 'w3pixelcapi'
         );
         
+        // Limited Data Use (LDU) for California Consumer Privacy Act (CCPA) compliance
+        if (!empty($this->settings['enable_ldu'])) {
+            $body['data_processing_options'] = array('LDU');
+            $body['data_processing_options_country'] = 0;
+            $body['data_processing_options_state'] = 0;
+        }
+
         // Add test event code if provided
         if (!empty($this->settings['test_event_code'])) {
             $body['test_event_code'] = $this->settings['test_event_code'];
@@ -119,7 +126,10 @@ class FBPixel_CAPI_API_Client {
         if ($response_code >= 400) {
             $error_message = $this->parse_error_response($response_body);
             $this->log_error('API Error', $error_message, $events);
-            if ($allow_queue) {
+            // Only retry temporary server errors (5xx) or rate limit throttling (429)
+            // Dropping 400-499 client errors (invalid token, bad parameters) avoids dead retry loops
+            $is_retryable = ($response_code >= 500 || $response_code === 429);
+            if ($allow_queue && $is_retryable) {
                 foreach ($events as $event) {
                     $this->queue_event($event, $error_message);
                 }
@@ -360,10 +370,17 @@ class FBPixel_CAPI_API_Client {
      *
      * @return array|WP_Error
      */
-    public function test_connection() {
-        if (empty($this->settings['pixel_id']) || empty($this->settings['access_token'])) {
+    public function test_connection($pixel_id = '', $access_token = '') {
+        $pixel_id = !empty($pixel_id) ? trim($pixel_id) : (!empty($this->settings['pixel_id']) ? $this->settings['pixel_id'] : '');
+        $access_token = !empty($access_token) ? trim($access_token) : (!empty($this->settings['access_token']) ? $this->settings['access_token'] : '');
+
+        if (empty($pixel_id) || empty($access_token)) {
             return new WP_Error('missing_credentials', __('Pixel ID or Access Token is missing', 'w3-pixel-capi'));
         }
+
+        $orig_settings = $this->settings;
+        $this->settings['pixel_id'] = $pixel_id;
+        $this->settings['access_token'] = $access_token;
 
         $test_event = array(
             'event_name'       => 'PageView',
@@ -380,7 +397,10 @@ class FBPixel_CAPI_API_Client {
             'event_id'         => FBPixel_CAPI_Helpers::guidv4()
         );
 
-        return $this->send_events(array($test_event), false, true);
+        $result = $this->send_events(array($test_event), false, true);
+        $this->settings = $orig_settings;
+
+        return $result;
     }
 
     /**
@@ -407,6 +427,24 @@ class FBPixel_CAPI_API_Client {
         global $wpdb;
         $table_name = $this->get_log_table_name();
         return (bool) $wpdb->query("TRUNCATE TABLE {$table_name}");
+    }
+
+    /**
+     * Prune old logs to avoid database bloat
+     *
+     * @param int $days
+     * @return int Number of deleted rows
+     */
+    public function cleanup_old_logs($days = 7) {
+        global $wpdb;
+        $table_name = $this->get_log_table_name();
+        $days = max(1, (int) $days);
+        return $wpdb->query(
+            $wpdb->prepare(
+                "DELETE FROM {$table_name} WHERE created_at < DATE_SUB(NOW(), INTERVAL %d DAY)",
+                $days
+            )
+        );
     }
 
 }

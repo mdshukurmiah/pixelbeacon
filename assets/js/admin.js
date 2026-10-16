@@ -78,26 +78,34 @@
             var $testButton = $('input[name="test_connection"]');
             
             if ($testButton.length) {
-                $testButton.on('click', function() {
+                $testButton.on('click', function(e) {
                     var $this = $(this);
                     var originalText = $this.val();
                     
                     // Check if required fields are filled
-                    var pixelId = $('#pixel_id').val().trim();
-                    var accessToken = $('#access_token').val().trim();
+                    var pixelId = $('#pixel_id').val() ? $('#pixel_id').val().trim() : '';
+                    var accessToken = $('#access_token').val() ? $('#access_token').val().trim() : '';
                     
                     if (!pixelId || !accessToken) {
                         alert('Please enter both Pixel ID and Access Token before testing the connection.');
                         return false;
                     }
+
+                    // Copy values into test connection form
+                    $('#test_pixel_id').val(pixelId);
+                    $('#test_access_token').val(accessToken);
                     
                     // Add loading state
                     $this.val('Testing...').prop('disabled', true);
                     
-                    // Re-enable button after form submission
+                    // Submit the test form explicitly
+                    $('#fbpixel_test_connection_form').submit();
+                    
                     setTimeout(function() {
                         $this.val(originalText).prop('disabled', false);
                     }, 3000);
+
+                    return false;
                 });
             }
         }

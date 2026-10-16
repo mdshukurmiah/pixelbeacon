@@ -2,7 +2,7 @@
 /**
  * W3 Pixel CAPI Event Tracker
  * 
- * Handles event tracking and data collection
+ * Handles event tracking, deduplication, and rich customer data collection.
  */
 
 // Prevent direct access
@@ -44,220 +44,242 @@ class FBPixel_CAPI_Event_Tracker {
     
     /**
      * Track PageView event
+     * Queues browser event and dispatches to CAPI non-blockingly via public.js
      */
     public function track_page_view() {
         if (!$this->is_event_enabled('PageView')) {
             return;
         }
         
+        $event_id = $this->generate_event_id('PageView');
         $event_data = array(
-            'event_name' => 'PageView',
-            'event_time' => time(),
-            'action_source' => 'website',
+            'event_name'       => 'PageView',
+            'event_time'       => time(),
+            'action_source'    => 'website',
             'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
-            'user_data' => $this->get_user_data(),
-            'custom_data' => array(),
-            'event_id' => $this->generate_event_id('PageView')
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(),
+            'event_id'         => $event_id
         );
         
-        // Add referrer if available
         if (!empty($_SERVER['HTTP_REFERER'])) {
-            $event_data['referrer_url'] = esc_url_raw($_SERVER['HTTP_REFERER']);
+            $event_data['referrer_url'] = esc_url_raw(wp_unslash($_SERVER['HTTP_REFERER']));
         }
 
-        $this->queue_browser_event($event_data);
-        $this->send_event($event_data);
+        // Queue browser event with matching event_id and non-blocking CAPI relay
+        $this->queue_browser_event($event_data, false, true);
     }
     
     /**
      * Track ViewContent event (WooCommerce product pages)
      */
     public function track_view_content() {
-        if (!empty($this->settings['debug_mode'])) {
-            error_log('Facebook Pixel CAPI: track_view_content called');
-        }
-        
-        if (!$this->is_event_enabled('ViewContent')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: ViewContent event is not enabled in settings');
-            }
-            return;
-        }
-        
-        if (!class_exists('WooCommerce')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: WooCommerce is not active');
-            }
-            return;
-        }
-        
-        // Check if we're on a product page
-        if (!is_product()) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: Not on a product page, skipping ViewContent');
-            }
+        if (!$this->is_event_enabled('ViewContent') || !class_exists('WooCommerce') || !is_product()) {
             return;
         }
         
         global $product;
         if (!$product || !is_a($product, 'WC_Product')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: No valid product found on product page');
-            }
             return;
         }
         
         $product_id = $product->get_id();
         $product_price = $product->get_price();
         
-        // Handle variable products
         if ($product->is_type('variable')) {
             $variation_prices = $product->get_variation_prices();
             if (!empty($variation_prices['price'])) {
-                $product_price = min($variation_prices['price']); // Use minimum price for variable products
+                $product_price = min($variation_prices['price']);
             }
         }
         
+        $event_id = $this->generate_event_id('ViewContent', (string) $product_id);
         $event_data = array(
-            'event_name' => 'ViewContent',
-            'event_time' => time(),
-            'action_source' => 'website',
+            'event_name'       => 'ViewContent',
+            'event_time'       => time(),
+            'action_source'    => 'website',
             'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
-            'user_data' => $this->get_user_data(),
-            'custom_data' => array(
-                'content_ids' => array((string) $product_id),
-                'content_type' => 'product',
-                'content_name' => $product->get_name(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_ids'      => array((string) $product_id),
+                'content_type'     => 'product',
+                'content_name'     => $product->get_name(),
                 'content_category' => $this->get_product_categories($product_id),
-                'value' => (float) $product_price,
-                'currency' => get_woocommerce_currency(),
-                'contents' => array(
+                'value'            => (float) $product_price,
+                'currency'         => get_woocommerce_currency(),
+                'contents'         => array(
                     array(
-                        'id' => (string) $product_id,
-                        'quantity' => 1,
+                        'id'         => (string) $product_id,
+                        'quantity'   => 1,
                         'item_price' => (float) $product_price
                     )
                 )
             ),
-            'event_id' => $this->generate_event_id('ViewContent', $product_id)
+            'event_id'         => $event_id
         );
         
-        // Add additional product data if available
         if ($product->get_sku()) {
             $event_data['custom_data']['content_sku'] = $product->get_sku();
         }
         
-        // Add brand if available (from product attributes or custom fields)
         $brand = $this->get_product_brand($product);
         if ($brand) {
             $event_data['custom_data']['brand'] = $brand;
         }
-        
-        if (!empty($this->settings['debug_mode'])) {
-            error_log('Facebook Pixel CAPI: ViewContent event data prepared for product ID: ' . $product_id);
-        }
 
-        $this->queue_browser_event($event_data);
-        $this->send_event($event_data);
+        // Queue browser event with matching event_id and non-blocking CAPI relay
+        $this->queue_browser_event($event_data, false, true);
     }
     
     /**
-     * Track AddToCart event (WooCommerce)
+     * Track AddToCart event (WooCommerce standard form submission)
      * 
      * @param int $product_id Product ID
      * @param int $quantity Quantity
      * @param int $variation_id Variation ID (optional)
      */
     public function track_add_to_cart($product_id, $quantity = 1, $variation_id = 0) {
-        if (!empty($this->settings['debug_mode'])) {
-            error_log('Facebook Pixel CAPI: track_add_to_cart called with product_id=' . $product_id . ', quantity=' . $quantity . ', variation_id=' . $variation_id);
-        }
-        
-        if (!$this->is_event_enabled('AddToCart')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: AddToCart event is not enabled in settings');
-            }
+        if (!$this->is_event_enabled('AddToCart') || !class_exists('WooCommerce')) {
             return;
         }
         
-        if (!class_exists('WooCommerce')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: WooCommerce is not active');
-            }
-            return;
-        }
-        
-        $product = wc_get_product($variation_id ? $variation_id : $product_id);
+        $target_id = $variation_id ? $variation_id : $product_id;
+        $product = wc_get_product($target_id);
         if (!$product) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: Could not load product with ID ' . ($variation_id ? $variation_id : $product_id));
-            }
             return;
         }
         
+        $event_id = $this->generate_event_id('AddToCart', $target_id . '_' . $quantity);
         $event_data = array(
-            'event_name' => 'AddToCart',
-            'event_time' => time(),
-            'action_source' => 'website',
+            'event_name'       => 'AddToCart',
+            'event_time'       => time(),
+            'action_source'    => 'website',
             'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
-            'user_data' => $this->get_user_data(),
-            'custom_data' => array(
-                'content_ids' => array((string) $product_id),
-                'content_type' => 'product',
-                'value' => (float) $product->get_price(),
-                'currency' => get_woocommerce_currency(),
-                'content_name' => $product->get_name(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_ids'      => array((string) $target_id),
+                'content_type'     => 'product',
+                'value'            => (float) $product->get_price() * (int) $quantity,
+                'currency'         => get_woocommerce_currency(),
+                'content_name'     => $product->get_name(),
                 'content_category' => $this->get_product_categories($product_id),
-                'num_items' => (int) $quantity,
-                'contents' => array(
+                'num_items'        => (int) $quantity,
+                'contents'         => array(
                     array(
-                        'id' => (string) $product_id,
-                        'quantity' => (int) $quantity,
+                        'id'         => (string) $target_id,
+                        'quantity'   => (int) $quantity,
                         'item_price' => (float) $product->get_price()
                     )
                 )
             ),
-            'event_id' => $this->generate_event_id('AddToCart', $product_id . '_' . $quantity)
+            'event_id'         => $event_id
         );
 
-        // Store for browser-side tracking (covers AJAX add-to-cart flows)
-        $this->queue_browser_event($event_data, true);
+        // Store in session for browser pickup on redirect
+        $this->queue_browser_event($event_data, true, false);
         $this->send_event($event_data);
     }
     
     /**
-     * Track Purchase event (WooCommerce)
+     * Get or create synchronized purchase event ID stored in order meta
+     *
+     * @param WC_Order $order
+     * @return string UUIDv4
+     */
+    public function get_or_create_purchase_event_id($order) {
+        $meta_key = '_w3_purchase_event_id';
+        $existing = $order->get_meta($meta_key, true);
+        if (!empty($existing)) {
+            return $existing;
+        }
+
+        $event_id = FBPixel_CAPI_Helpers::guidv4();
+        $order->update_meta_data($meta_key, $event_id);
+        $order->save();
+
+        return $event_id;
+    }
+
+    /**
+     * Track Purchase event on Order Received (Thank You) page
      * 
      * @param int $order_id Order ID
      */
     public function track_purchase($order_id) {
-        if (!empty($this->settings['debug_mode'])) {
-            error_log('Facebook Pixel CAPI: track_purchase called with order_id=' . $order_id);
-        }
-        
-        if (!$this->is_event_enabled('Purchase')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: Purchase event is not enabled in settings');
-            }
-            return;
-        }
-        
-        if (!class_exists('WooCommerce')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: WooCommerce is not active');
-            }
+        if (!$this->is_event_enabled('Purchase') || !class_exists('WooCommerce')) {
             return;
         }
         
         $order = wc_get_order($order_id);
         if (!$order) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: Could not load order with ID ' . $order_id);
-            }
             return;
         }
+
+        // Deduplication Gate 1: Check if browser or server already fired purchase
+        $already_fired = $order->get_meta('_w3_purchase_event_fired', true);
         
-        // Get order items
+        // Synchronized event ID from order meta
+        $event_id = $this->get_or_create_purchase_event_id($order);
+
+        $event_data = $this->build_purchase_event_data($order, $event_id);
+
+        // Always queue browser event with the exact same event_id
+        $this->queue_browser_event($event_data, false, false);
+
+        // Send CAPI Purchase only if not already fired by a webhook or previous load
+        if (!$already_fired) {
+            $order->update_meta_data('_w3_purchase_event_fired', '1');
+            $order->save();
+            $this->send_event($event_data);
+        }
+    }
+
+    /**
+     * Track Purchase event on Order Status Change (Processing / Completed)
+     * Catches orders completed via payment gateway webhooks (Stripe, PayPal, COD)
+     * even if customer never visits the Thank You page.
+     *
+     * @param int $order_id
+     * @param WC_Order|null $order
+     */
+    public function track_purchase_on_status_change($order_id, $order = null) {
+        if (!$this->is_event_enabled('Purchase') || !class_exists('WooCommerce')) {
+            return;
+        }
+
+        if (!$order && function_exists('wc_get_order')) {
+            $order = wc_get_order($order_id);
+        }
+        if (!$order) {
+            return;
+        }
+
+        // Deduplication Gate: If already fired (e.g. by thankyou page), skip!
+        if ($order->get_meta('_w3_purchase_event_fired', true)) {
+            return;
+        }
+
+        // Block frontend AJAX requests to avoid race conditions during checkout
+        if ((function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_REQUEST['wc-ajax'])) {
+            return;
+        }
+
+        $event_id = $this->get_or_create_purchase_event_id($order);
+        $order->update_meta_data('_w3_purchase_event_fired', '1');
+        $order->save();
+
+        $event_data = $this->build_purchase_event_data($order, $event_id);
+        $this->send_event($event_data);
+    }
+
+    /**
+     * Build rich purchase event data with customer totals and LTV metrics
+     *
+     * @param WC_Order $order
+     * @param string $event_id
+     * @return array
+     */
+    private function build_purchase_event_data($order, $event_id) {
         $content_ids = array();
         $contents = array();
         $total_quantity = 0;
@@ -265,70 +287,86 @@ class FBPixel_CAPI_Event_Tracker {
         foreach ($order->get_items() as $item) {
             $product_id = $item->get_product_id();
             $quantity = $item->get_quantity();
-            $price = $item->get_total() / $quantity;
+            $price = $quantity > 0 ? $item->get_total() / $quantity : 0;
             
             $content_ids[] = (string) $product_id;
             $contents[] = array(
-                'id' => (string) $product_id,
-                'quantity' => (int) $quantity,
+                'id'         => (string) $product_id,
+                'quantity'   => (int) $quantity,
                 'item_price' => (float) $price
             );
             $total_quantity += $quantity;
         }
-        
-        $event_data = array(
-            'event_name' => 'Purchase',
-            'event_time' => time(),
-            'action_source' => 'website',
-            'event_source_url' => $order->get_checkout_order_received_url(),
-            'user_data' => $this->get_user_data_from_order($order),
-            'custom_data' => array(
-                'content_ids' => $content_ids,
-                'content_type' => 'product',
-                'contents' => $contents,
-                'value' => (float) $order->get_total(),
-                'currency' => $order->get_currency(),
-                'num_items' => $total_quantity,
-                'order_id' => (string) $order_id
-            ),
-            'event_id' => $this->generate_event_id('Purchase', $order_id)
+
+        $custom_data = array(
+            'content_ids'  => $content_ids,
+            'content_type' => 'product',
+            'contents'     => $contents,
+            'value'        => (float) $order->get_total(),
+            'currency'     => $order->get_currency(),
+            'num_items'    => $total_quantity,
+            'order_id'     => (string) $order->get_id()
         );
 
-        $this->queue_browser_event($event_data);
-        $this->send_event($event_data);
+        // Add Customer Totals and Lifetime Value (LTV) metrics
+        $customer_id = $order->get_customer_id();
+        if ($customer_id && function_exists('wc_get_orders')) {
+            $customer_orders = wc_get_orders(array(
+                'customer_id' => $customer_id,
+                'limit'       => -1,
+                'status'      => array('wc-completed', 'wc-processing')
+            ));
+            $orders_count = count($customer_orders);
+            $ltv = 0;
+            foreach ($customer_orders as $past_order) {
+                $ltv += (float) $past_order->get_total();
+            }
+            $custom_data['predicted_ltv'] = (float) round($ltv, 2);
+            $custom_data['transactions_count'] = (int) $orders_count;
+            $custom_data['average_order'] = $orders_count > 0 ? (float) round($ltv / $orders_count, 2) : (float) $order->get_total();
+        }
+
+        // Coupon details
+        $coupons = $order->get_coupon_codes();
+        if (!empty($coupons)) {
+            $custom_data['coupon_used'] = 'yes';
+            $custom_data['coupon_name'] = implode(', ', $coupons);
+        }
+
+        // Shipping method
+        $shipping_items = $order->get_items('shipping');
+        if (!empty($shipping_items)) {
+            $shipping_names = array();
+            foreach ($shipping_items as $s) {
+                $shipping_names[] = $s->get_name();
+            }
+            $custom_data['shipping'] = implode(', ', $shipping_names);
+        }
+        
+        return array(
+            'event_name'       => 'Purchase',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => $order->get_checkout_order_received_url(),
+            'user_data'        => $this->get_user_data_from_order($order),
+            'custom_data'      => $custom_data,
+            'event_id'         => $event_id
+        );
     }
     
     /**
      * Track InitiateCheckout event (WooCommerce)
      */
     public function track_initiate_checkout() {
-        if (!empty($this->settings['debug_mode'])) {
-            error_log('Facebook Pixel CAPI: track_initiate_checkout called');
-        }
-        
-        if (!$this->is_event_enabled('InitiateCheckout')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: InitiateCheckout event is not enabled in settings');
-            }
-            return;
-        }
-        
-        if (!class_exists('WooCommerce')) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: WooCommerce is not active');
-            }
+        if (!$this->is_event_enabled('InitiateCheckout') || !class_exists('WooCommerce')) {
             return;
         }
         
         $cart = WC()->cart;
         if (!$cart || $cart->is_empty()) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI: Cart is empty or not available');
-            }
             return;
         }
         
-        // Get cart items
         $content_ids = array();
         $contents = array();
         $total_quantity = 0;
@@ -336,39 +374,37 @@ class FBPixel_CAPI_Event_Tracker {
         foreach ($cart->get_cart() as $cart_item) {
             $product_id = $cart_item['product_id'];
             $quantity = $cart_item['quantity'];
-            $price = $cart_item['line_total'] / $quantity;
+            $price = $quantity > 0 ? $cart_item['line_total'] / $quantity : 0;
             
             $content_ids[] = (string) $product_id;
             $contents[] = array(
-                'id' => (string) $product_id,
-                'quantity' => (int) $quantity,
+                'id'         => (string) $product_id,
+                'quantity'   => (int) $quantity,
                 'item_price' => (float) $price
             );
             $total_quantity += $quantity;
         }
         
+        $event_id = $this->generate_event_id('InitiateCheckout', md5(serialize($content_ids)));
         $event_data = array(
-            'event_name' => 'InitiateCheckout',
-            'event_time' => time(),
-            'action_source' => 'website',
+            'event_name'       => 'InitiateCheckout',
+            'event_time'       => time(),
+            'action_source'    => 'website',
             'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
-            'user_data' => $this->get_user_data(),
-            'custom_data' => array(
-                'content_ids' => $content_ids,
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_ids'  => $content_ids,
                 'content_type' => 'product',
-                'contents' => $contents,
-                'value' => (float) $cart->get_total('edit'),
-                'currency' => get_woocommerce_currency(),
-                'num_items' => $total_quantity
+                'contents'     => $contents,
+                'value'        => (float) $cart->get_total('edit'),
+                'currency'     => get_woocommerce_currency(),
+                'num_items'    => $total_quantity
             ),
-            'event_id' => $this->generate_event_id('InitiateCheckout', md5(serialize($content_ids)))
+            'event_id'         => $event_id
         );
         
-        // Defer this event to be sent in footer to ensure cart data is complete
-        $this->deferred_events[] = $event_data;
-
         // Queue browser event to fire in footer
-        $this->queue_browser_event($event_data);
+        $this->queue_browser_event($event_data, false, true);
     }
     
     /**
@@ -398,10 +434,10 @@ class FBPixel_CAPI_Event_Tracker {
         if (class_exists('WooCommerce') && function_exists('WC')) {
             $session = WC()->session;
             if ($session) {
-                $pending = $session->get('fbpixel_capi_browser_events', array());
-                if (!empty($pending) && is_array($pending)) {
-                    $events = array_merge($events, $pending);
-                    $session->set('fbpixel_capi_browser_events', array());
+                $session_events = $session->get('fbpixel_capi_browser_events', array());
+                if (!empty($session_events) && is_array($session_events)) {
+                    $events = array_merge($events, $session_events);
+                    $session->__unset('fbpixel_capi_browser_events');
                 }
             }
         }
@@ -410,46 +446,19 @@ class FBPixel_CAPI_Event_Tracker {
     }
     
     /**
-     * Send event to API
+     * Send event to Facebook Conversions API
      * 
      * @param array $event_data Event data
+     * @return array|WP_Error Response or error
      */
-    private function send_event($event_data) {
-        // Validate required fields
-        if (empty($event_data['event_name']) || empty($event_data['event_time'])) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI Error: Missing required event data - event_name or event_time');
-            }
-            return;
-        }
-        
-        // Check if we have valid API credentials
-        if (empty($this->settings['pixel_id']) || empty($this->settings['access_token'])) {
-            if (!empty($this->settings['debug_mode'])) {
-                error_log('Facebook Pixel CAPI Error: Missing Pixel ID or Access Token');
-            }
-            return;
-        }
-        
-        // Log event attempt if debug mode is enabled
-        if (!empty($this->settings['debug_mode'])) {
-            error_log('Facebook Pixel CAPI: Attempting to send ' . $event_data['event_name'] . ' event');
-            error_log('Facebook Pixel CAPI: Event data: ' . json_encode($event_data, JSON_PRETTY_PRINT));
-        }
-        
-        // Send to API
+    public function send_event($event_data) {
         $result = $this->api_client->send_event($event_data);
         
-        // Log result if debug mode is enabled
         if (!empty($this->settings['debug_mode'])) {
             if (is_wp_error($result)) {
                 error_log('Facebook Pixel CAPI Error: ' . $result->get_error_message());
-                error_log('Facebook Pixel CAPI Error Details: ' . print_r($result->get_error_data(), true));
             } else {
-                error_log('Facebook Pixel CAPI Success: Event ' . $event_data['event_name'] . ' sent successfully');
-                if (is_array($result) && isset($result['response'])) {
-                    error_log('Facebook Pixel CAPI Response: ' . json_encode($result['response'], JSON_PRETTY_PRINT));
-                }
+                error_log('Facebook Pixel CAPI Success: Event ' . $event_data['event_name'] . ' sent');
             }
         }
         
@@ -461,16 +470,18 @@ class FBPixel_CAPI_Event_Tracker {
      *
      * @param array $event_data
      * @param bool $store_in_session
+     * @param bool $send_to_capi
      */
-    private function queue_browser_event($event_data, $store_in_session = false) {
+    private function queue_browser_event($event_data, $store_in_session = false, $send_to_capi = false) {
         if (empty($event_data['event_name'])) {
             return;
         }
 
         $browser_event = array(
-            'event_name' => $event_data['event_name'],
-            'event_id' => isset($event_data['event_id']) ? $event_data['event_id'] : '',
-            'custom_data' => isset($event_data['custom_data']) ? $event_data['custom_data'] : array()
+            'event_name'   => $event_data['event_name'],
+            'event_id'     => isset($event_data['event_id']) ? $event_data['event_id'] : '',
+            'custom_data'  => isset($event_data['custom_data']) ? $event_data['custom_data'] : array(),
+            'send_to_capi' => $send_to_capi
         );
 
         if ($store_in_session && class_exists('WooCommerce') && function_exists('WC')) {
@@ -490,11 +501,11 @@ class FBPixel_CAPI_Event_Tracker {
     }
     
     /**
-     * Get user data for event
+     * Get rich user data for event (High EMQ)
      * 
      * @return array User data
      */
-    private function get_user_data() {
+    public function get_user_data() {
         $user_data = array(
             'client_ip_address' => FBPixel_CAPI_Helpers::get_client_ip(),
             'client_user_agent' => FBPixel_CAPI_Helpers::get_user_agent()
@@ -511,56 +522,42 @@ class FBPixel_CAPI_Event_Tracker {
             $user_data['fbp'] = $fbp;
         }
         
-        // Add user email if logged in
+        // Add user data if logged in
         if (is_user_logged_in()) {
             $current_user = wp_get_current_user();
             if (!empty($current_user->user_email)) {
-                $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($current_user->user_email);
-                if ($hashed) {
-                    $user_data['em'] = $hashed;
-                }
+                $user_data['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($current_user->user_email);
             }
-            
-            // Add user names if available
             if (!empty($current_user->first_name)) {
-                $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($current_user->first_name);
-                if ($hashed) {
-                    $user_data['fn'] = $hashed;
-                }
+                $user_data['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($current_user->first_name);
             }
-            
             if (!empty($current_user->last_name)) {
-                $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($current_user->last_name);
-                if ($hashed) {
-                    $user_data['ln'] = $hashed;
-                }
+                $user_data['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($current_user->last_name);
             }
+            $user_data['external_id'] = FBPixel_CAPI_Helpers::normalize_and_hash((string) $current_user->ID);
+        } else {
+            // Check form data persistence
+            $persisted = FBPixel_CAPI_Helpers::get_persistence_user_data();
+            if (!empty($persisted['em'])) {
+                $user_data['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['em']);
+            }
+            if (!empty($persisted['fn'])) {
+                $user_data['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['fn']);
+            }
+            if (!empty($persisted['ln'])) {
+                $user_data['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['ln']);
+            }
+            if (!empty($persisted['ph'])) {
+                $user_data['ph'] = FBPixel_CAPI_Helpers::normalize_and_hash_phone($persisted['ph']);
+            }
+            // Persistent external ID for guests
+            $user_data['external_id'] = FBPixel_CAPI_Helpers::get_pbid();
         }
 
         // Add WooCommerce customer data when available
-        if (class_exists('WooCommerce')) {
-            $customer = WC()->customer;
-            if ($customer) {
-                $customer_data = FBPixel_CAPI_Helpers::get_wc_customer_data($customer);
-                $user_data = array_merge($user_data, $customer_data);
-            }
-        }
-
-        // External ID (hashed unique user ID)
-        $user_id = get_current_user_id();
-        if (!empty($user_id)) {
-            $external_id = FBPixel_CAPI_Helpers::normalize_and_hash((string) $user_id);
-            if ($external_id) {
-                $user_data['external_id'] = $external_id;
-            }
-        } elseif (class_exists('WooCommerce') && !empty($customer) && method_exists($customer, 'get_id')) {
-            $customer_id = $customer->get_id();
-            if (!empty($customer_id)) {
-                $external_id = FBPixel_CAPI_Helpers::normalize_and_hash((string) $customer_id);
-                if ($external_id) {
-                    $user_data['external_id'] = $external_id;
-                }
-            }
+        if (class_exists('WooCommerce') && function_exists('WC') && WC()->customer) {
+            $customer_data = FBPixel_CAPI_Helpers::get_wc_customer_data(WC()->customer);
+            $user_data = array_merge($user_data, $customer_data);
         }
 
         $user_data = array_filter($user_data, function ($value) {
@@ -571,7 +568,7 @@ class FBPixel_CAPI_Event_Tracker {
     }
     
     /**
-     * Get user data from WooCommerce order
+     * Get user data from WooCommerce order (retrieves locked fbp/fbc from order meta)
      * 
      * @param WC_Order $order Order object
      * @return array User data
@@ -582,88 +579,61 @@ class FBPixel_CAPI_Event_Tracker {
             'client_user_agent' => FBPixel_CAPI_Helpers::get_user_agent()
         );
         
-        // Ensure cookies and add Facebook click/browser IDs
-        $fbc = FBPixel_CAPI_Helpers::ensure_fbc();
-        if (!empty($fbc)) {
-            $user_data['fbc'] = $fbc;
+        // Retrieve locked cookies from order meta
+        $fb_cookies = FBPixel_CAPI_Helpers::get_fb_cookies_from_order($order);
+        if (!empty($fb_cookies['fbc'])) {
+            $user_data['fbc'] = $fb_cookies['fbc'];
         }
-
-        $fbp = FBPixel_CAPI_Helpers::ensure_fbp();
-        if (!empty($fbp)) {
-            $user_data['fbp'] = $fbp;
+        if (!empty($fb_cookies['fbp'])) {
+            $user_data['fbp'] = $fb_cookies['fbp'];
         }
         
         // Add customer data from order
         $billing_email = $order->get_billing_email();
         if (!empty($billing_email)) {
-            $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($billing_email);
-            if ($hashed) {
-                $user_data['em'] = $hashed;
-            }
+            $user_data['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_email);
         }
         
         $billing_first_name = $order->get_billing_first_name();
         if (!empty($billing_first_name)) {
-            $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($billing_first_name);
-            if ($hashed) {
-                $user_data['fn'] = $hashed;
-            }
+            $user_data['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_first_name);
         }
         
         $billing_last_name = $order->get_billing_last_name();
         if (!empty($billing_last_name)) {
-            $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($billing_last_name);
-            if ($hashed) {
-                $user_data['ln'] = $hashed;
-            }
+            $user_data['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_last_name);
         }
-        
+
         $billing_phone = $order->get_billing_phone();
         if (!empty($billing_phone)) {
-            $hashed = FBPixel_CAPI_Helpers::normalize_and_hash_phone($billing_phone);
-            if ($hashed) {
-                $user_data['ph'] = $hashed;
-            }
+            $user_data['ph'] = FBPixel_CAPI_Helpers::normalize_and_hash_phone($billing_phone);
         }
         
         $billing_city = $order->get_billing_city();
         if (!empty($billing_city)) {
-            $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($billing_city);
-            if ($hashed) {
-                $user_data['ct'] = $hashed;
-            }
+            $user_data['ct'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_city);
         }
         
         $billing_state = $order->get_billing_state();
         if (!empty($billing_state)) {
-            $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($billing_state);
-            if ($hashed) {
-                $user_data['st'] = $hashed;
-            }
+            $user_data['st'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_state);
         }
         
         $billing_postcode = $order->get_billing_postcode();
         if (!empty($billing_postcode)) {
-            $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($billing_postcode);
-            if ($hashed) {
-                $user_data['zp'] = $hashed;
-            }
+            $user_data['zp'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_postcode);
         }
         
         $billing_country = $order->get_billing_country();
         if (!empty($billing_country)) {
-            $hashed = FBPixel_CAPI_Helpers::normalize_and_hash($billing_country);
-            if ($hashed) {
-                $user_data['country'] = $hashed;
-            }
+            $user_data['country'] = FBPixel_CAPI_Helpers::normalize_and_hash($billing_country);
         }
 
         $customer_id = $order->get_customer_id();
         if (!empty($customer_id)) {
-            $external_id = FBPixel_CAPI_Helpers::normalize_and_hash((string) $customer_id);
-            if ($external_id) {
-                $user_data['external_id'] = $external_id;
-            }
+            $user_data['external_id'] = FBPixel_CAPI_Helpers::normalize_and_hash((string) $customer_id);
+        } else {
+            $user_data['external_id'] = FBPixel_CAPI_Helpers::get_pbid();
         }
 
         $user_data = array_filter($user_data, function ($value) {
@@ -681,11 +651,7 @@ class FBPixel_CAPI_Event_Tracker {
      */
     private function get_product_brand($product) {
         $brand = '';
-        
-        // Try to get brand from product attributes
         $attributes = $product->get_attributes();
-        
-        // Common brand attribute names
         $brand_attributes = array('brand', 'pa_brand', 'product_brand', 'pa_product_brand');
         
         foreach ($brand_attributes as $brand_attr) {
@@ -706,7 +672,6 @@ class FBPixel_CAPI_Event_Tracker {
             }
         }
         
-        // Try custom fields if no brand attribute found
         if (empty($brand)) {
             $custom_brand_fields = array('_brand', '_product_brand', 'brand', 'product_brand');
             foreach ($custom_brand_fields as $field) {
@@ -741,15 +706,14 @@ class FBPixel_CAPI_Event_Tracker {
     }
     
     /**
-     * Generate unique event ID for deduplication
+     * Generate unique RFC 4122 UUIDv4 event ID for deduplication
      * 
      * @param string $event_name Event name
      * @param string $additional_data Additional data for uniqueness
      * @return string Event ID
      */
     private function generate_event_id($event_name, $additional_data = '') {
-        $data = $event_name . '_' . time() . '_' . $additional_data . '_' . FBPixel_CAPI_Helpers::get_client_ip();
-        $event_id = substr(md5($data), 0, 16);
+        $event_id = FBPixel_CAPI_Helpers::guidv4();
         return apply_filters('fbpixel_capi_event_id', $event_id, $event_name, $additional_data);
     }
     
@@ -767,4 +731,3 @@ class FBPixel_CAPI_Event_Tracker {
         return !empty($this->settings['enabled_events'][$event_name]);
     }
 }
-

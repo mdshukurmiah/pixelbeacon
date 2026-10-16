@@ -2,7 +2,8 @@
 /**
  * W3 Pixel CAPI Helpers
  * 
- * Utility functions and helpers
+ * Utility functions and helpers for high Event Match Quality (EMQ),
+ * cookie persistence, and robust deduplication.
  */
 
 // Prevent direct access
@@ -13,40 +14,55 @@ if (!defined('ABSPATH')) {
 class FBPixel_CAPI_Helpers {
     
     /**
-     * Get client IP address
+     * Generate an RFC 4122 compliant UUIDv4 for event deduplication
+     *
+     * @return string
+     */
+    public static function guidv4() {
+        if (function_exists('wp_generate_uuid4')) {
+            return wp_generate_uuid4();
+        }
+
+        $data = openssl_random_pseudo_bytes(16);
+        $data[6] = chr(ord($data[6]) & 0x0f | 0x40);
+        $data[8] = chr(ord($data[8]) & 0x3f | 0x80);
+
+        return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
+    }
+
+    /**
+     * Get client IP address resolving reverse proxies and Cloudflare
      * 
      * @return string Client IP address
      */
     public static function get_client_ip() {
         $ip_keys = array(
             'HTTP_CF_CONNECTING_IP',     // Cloudflare
+            'HTTP_TRUE_CLIENT_IP',       // Akamai / Cloudflare Enterprise
+            'HTTP_X_REAL_IP',            // Nginx proxy
+            'HTTP_X_FORWARDED_FOR',      // Load balancer / proxy chain
             'HTTP_CLIENT_IP',            // Proxy
-            'HTTP_X_FORWARDED_FOR',      // Load balancer/proxy
-            'HTTP_X_FORWARDED',          // Proxy
-            'HTTP_X_CLUSTER_CLIENT_IP',  // Cluster
-            'HTTP_FORWARDED_FOR',        // Proxy
-            'HTTP_FORWARDED',            // Proxy
-            'REMOTE_ADDR'                // Standard
+            'REMOTE_ADDR'                // Direct TCP peer
         );
         
         foreach ($ip_keys as $key) {
-            if (array_key_exists($key, $_SERVER) === true) {
-                $ip = $_SERVER[$key];
+            if (!empty($_SERVER[$key])) {
+                $raw = sanitize_text_field(wp_unslash($_SERVER[$key]));
                 
-                // Handle comma-separated IPs (from proxies)
-                if (strpos($ip, ',') !== false) {
-                    $ip = trim(explode(',', $ip)[0]);
-                }
+                // If comma-separated chain, take the first (originating client) IP
+                $ip = trim(current(preg_split('/,/', $raw)));
                 
-                // Validate IP address
-                if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE)) {
+                // Strip port numbers from IPv4 (1.2.3.4:56789) and bracketed IPv6 ([::1]:56789)
+                $ip = preg_replace('/([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+):.*|\[([^\]]+)\].*/', '$1$2', $ip);
+                
+                // Validate IP address (IPv4 or IPv6)
+                if (filter_var($ip, FILTER_VALIDATE_IP)) {
                     return $ip;
                 }
             }
         }
         
-        // Fallback to REMOTE_ADDR even if it's private/reserved
-        return isset($_SERVER['REMOTE_ADDR']) ? $_SERVER['REMOTE_ADDR'] : '';
+        return isset($_SERVER['REMOTE_ADDR']) ? sanitize_text_field(wp_unslash($_SERVER['REMOTE_ADDR'])) : '127.0.0.1';
     }
     
     /**
@@ -55,11 +71,11 @@ class FBPixel_CAPI_Helpers {
      * @return string User agent
      */
     public static function get_user_agent() {
-        return isset($_SERVER['HTTP_USER_AGENT']) ? $_SERVER['HTTP_USER_AGENT'] : '';
+        return isset($_SERVER['HTTP_USER_AGENT']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_USER_AGENT'])) : '';
     }
     
     /**
-     * Get current URL
+     * Get current page URL
      * 
      * @return string Current URL
      */
@@ -69,10 +85,39 @@ class FBPixel_CAPI_Helpers {
         }
 
         $scheme = is_ssl() ? 'https' : 'http';
-        $host = isset($_SERVER['HTTP_HOST']) ? $_SERVER['HTTP_HOST'] : parse_url(home_url(), PHP_URL_HOST);
-        $request_uri = isset($_SERVER['REQUEST_URI']) ? $_SERVER['REQUEST_URI'] : '/';
+        $host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : parse_url(home_url(), PHP_URL_HOST);
+        $request_uri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
 
         return esc_url_raw($scheme . '://' . $host . $request_uri);
+    }
+
+    /**
+     * Get cookie domain so cookies span subdomains
+     *
+     * @return string
+     */
+    public static function get_cookie_domain() {
+        if (defined('COOKIE_DOMAIN') && COOKIE_DOMAIN) {
+            return COOKIE_DOMAIN;
+        }
+
+        $host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : parse_url(home_url(), PHP_URL_HOST);
+        if (empty($host)) {
+            return '';
+        }
+
+        // Strip port if present
+        $host = preg_replace('/:\d+$/', '', $host);
+
+        // Strip www. prefix
+        $host = preg_replace('/^www\./i', '', $host);
+
+        // Don\'t set domain for localhost or raw IP
+        if ($host === 'localhost' || filter_var($host, FILTER_VALIDATE_IP)) {
+            return '';
+        }
+
+        return '.' . $host;
     }
     
     /**
@@ -87,7 +132,7 @@ class FBPixel_CAPI_Helpers {
     }
     
     /**
-     * Sanitize phone number
+     * Sanitize phone number (digits only)
      * 
      * @param string $phone Phone number
      * @return string Sanitized phone number (digits only)
@@ -117,7 +162,7 @@ class FBPixel_CAPI_Helpers {
     }
 
     /**
-     * Normalize and hash data if needed (avoids double hashing)
+     * Normalize and hash string data if needed (avoids double hashing)
      *
      * @param string $data
      * @return string|null
@@ -133,6 +178,13 @@ class FBPixel_CAPI_Helpers {
         if (self::is_sha256($data)) {
             return strtolower($data);
         }
+
+        if (function_exists('mb_strtolower')) {
+            $data = mb_strtolower($data, 'UTF-8');
+        } else {
+            $data = strtolower($data);
+        }
+
         return self::hash_data($data);
     }
 
@@ -177,8 +229,78 @@ class FBPixel_CAPI_Helpers {
      * @return bool Whether access token is valid
      */
     public static function validate_access_token($access_token) {
-        // Basic validation - access tokens are typically long alphanumeric strings
         return strlen($access_token) > 50 && preg_match('/^[a-zA-Z0-9_-]+$/', $access_token);
+    }
+
+    /**
+     * Get or generate a persistent External ID for guests
+     *
+     * @return string SHA-256 hashed 16-byte random token
+     */
+    public static function get_pbid() {
+        if (!empty($_COOKIE['w3_pbid'])) {
+            return sanitize_text_field(wp_unslash($_COOKIE['w3_pbid']));
+        }
+
+        $ip = self::get_client_ip();
+        $transient_key = 'w3_pbid_' . md5($ip);
+        $cached = get_transient($transient_key);
+        if (!empty($cached)) {
+            return $cached;
+        }
+
+        $random = bin2hex(random_bytes(16));
+        $pbid = hash('sha256', $random);
+
+        self::set_cookie('w3_pbid', $pbid, 365);
+        set_transient($transient_key, $pbid, 600);
+
+        return $pbid;
+    }
+
+    /**
+     * Ensure persistent external ID exists
+     *
+     * @return string
+     */
+    public static function ensure_pbid() {
+        return self::get_pbid();
+    }
+
+    /**
+     * Extract user data persisted from form interactions
+     *
+     * @param string $em Existing email
+     * @param string $fn Existing first name
+     * @param string $ln Existing last name
+     * @param string $ph Existing phone
+     * @return array
+     */
+    public static function get_persistence_user_data($em = '', $fn = '', $ln = '', $ph = '') {
+        if (!empty($_COOKIE['w3_advanced_form_data'])) {
+            $data = json_decode(stripslashes($_COOKIE['w3_advanced_form_data']), true);
+            if (is_array($data)) {
+                if (empty($em) && !empty($data['email'])) {
+                    $em = sanitize_email($data['email']);
+                }
+                if (empty($fn) && !empty($data['first_name'])) {
+                    $fn = sanitize_text_field($data['first_name']);
+                }
+                if (empty($ln) && !empty($data['last_name'])) {
+                    $ln = sanitize_text_field($data['last_name']);
+                }
+                if (empty($ph) && !empty($data['phone'])) {
+                    $ph = sanitize_text_field($data['phone']);
+                }
+            }
+        }
+
+        return array(
+            'em' => $em,
+            'fn' => $fn,
+            'ln' => $ln,
+            'ph' => $ph
+        );
     }
     
     /**
@@ -306,6 +428,62 @@ class FBPixel_CAPI_Helpers {
         
         return $customer_data;
     }
+
+    /**
+     * Lock Facebook cookies into WooCommerce order meta during checkout
+     * This ensures payment gateway webhooks (PayPal, Stripe) retain attribution
+     *
+     * @param int|WC_Order $order_param
+     */
+    public static function save_fb_cookies_to_order($order_param) {
+        $order = ($order_param instanceof \WC_Order) ? $order_param : (function_exists('wc_get_order') ? wc_get_order($order_param) : null);
+        if (!$order) {
+            return;
+        }
+
+        $data = array(
+            'fbp' => self::ensure_fbp(),
+            'fbc' => self::ensure_fbc(),
+        );
+
+        $order->update_meta_data('_w3_fb_cookie', $data);
+        $order->save();
+    }
+
+    /**
+     * Retrieve Facebook cookies locked in WooCommerce order meta
+     *
+     * @param WC_Order $order
+     * @return array Array with fbp and fbc keys
+     */
+    public static function get_fb_cookies_from_order($order) {
+        $fbp = '';
+        $fbc = '';
+
+        if ($order && is_a($order, 'WC_Order')) {
+            $saved = $order->get_meta('_w3_fb_cookie', true);
+            if (!empty($saved) && is_array($saved)) {
+                if (!empty($saved['fbp'])) {
+                    $fbp = $saved['fbp'];
+                }
+                if (!empty($saved['fbc'])) {
+                    $fbc = $saved['fbc'];
+                }
+            }
+        }
+
+        if (empty($fbp)) {
+            $fbp = self::get_facebook_browser_id();
+        }
+        if (empty($fbc)) {
+            $fbc = self::get_facebook_click_id();
+        }
+
+        return array(
+            'fbp' => $fbp,
+            'fbc' => $fbc
+        );
+    }
     
     /**
      * Check if WooCommerce is active
@@ -326,7 +504,6 @@ class FBPixel_CAPI_Helpers {
             return get_woocommerce_currency();
         }
         
-        // Fallback to USD
         return 'USD';
     }
     
@@ -408,14 +585,12 @@ class FBPixel_CAPI_Helpers {
      * @return string|null Facebook click ID
      */
     public static function get_facebook_click_id() {
-        // Check URL parameter first
         if (!empty($_GET['fbclid'])) {
-            return sanitize_text_field($_GET['fbclid']);
+            return sanitize_text_field(wp_unslash($_GET['fbclid']));
         }
         
-        // Check cookie
         if (!empty($_COOKIE['_fbc'])) {
-            return sanitize_text_field($_COOKIE['_fbc']);
+            return sanitize_text_field(wp_unslash($_COOKIE['_fbc']));
         }
         
         return null;
@@ -428,7 +603,7 @@ class FBPixel_CAPI_Helpers {
      */
     public static function get_facebook_browser_id() {
         if (!empty($_COOKIE['_fbp'])) {
-            return sanitize_text_field($_COOKIE['_fbp']);
+            return sanitize_text_field(wp_unslash($_COOKIE['_fbp']));
         }
         
         return null;
@@ -441,11 +616,11 @@ class FBPixel_CAPI_Helpers {
      */
     public static function ensure_fbp() {
         if (!empty($_COOKIE['_fbp'])) {
-            return sanitize_text_field($_COOKIE['_fbp']);
+            return sanitize_text_field(wp_unslash($_COOKIE['_fbp']));
         }
 
         $fbp = 'fb.1.' . time() . '.' . wp_rand(1000000000, 9999999999);
-        self::set_cookie('_fbp', $fbp);
+        self::set_cookie('_fbp', $fbp, 730); // 2 years
         return $fbp;
     }
 
@@ -456,13 +631,13 @@ class FBPixel_CAPI_Helpers {
      */
     public static function ensure_fbc() {
         if (!empty($_COOKIE['_fbc'])) {
-            return sanitize_text_field($_COOKIE['_fbc']);
+            return sanitize_text_field(wp_unslash($_COOKIE['_fbc']));
         }
 
         if (!empty($_GET['fbclid'])) {
-            $fbclid = sanitize_text_field($_GET['fbclid']);
+            $fbclid = sanitize_text_field(wp_unslash($_GET['fbclid']));
             $fbc = 'fb.1.' . time() . '.' . $fbclid;
-            self::set_cookie('_fbc', $fbc);
+            self::set_cookie('_fbc', $fbc, 90); // 90 days
             return $fbc;
         }
 
@@ -470,7 +645,7 @@ class FBPixel_CAPI_Helpers {
     }
 
     /**
-     * Set a cookie with sane defaults
+     * Set a cookie with root domain and secure attributes
      *
      * @param string $name
      * @param string $value
@@ -482,8 +657,8 @@ class FBPixel_CAPI_Helpers {
         }
 
         $expire = time() + (int) $days * DAY_IN_SECONDS;
-        $path = defined('COOKIEPATH') ? COOKIEPATH : '/';
-        $domain = defined('COOKIE_DOMAIN') && COOKIE_DOMAIN ? COOKIE_DOMAIN : '';
+        $path = defined('COOKIEPATH') && COOKIEPATH ? COOKIEPATH : '/';
+        $domain = self::get_cookie_domain();
         $secure = is_ssl();
         $httponly = false;
 
@@ -503,4 +678,3 @@ class FBPixel_CAPI_Helpers {
         $_COOKIE[$name] = $value;
     }
 }
-

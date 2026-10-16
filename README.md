@@ -5,7 +5,7 @@
 **Requires at least:** 5.0  
 **Tested up to:** 6.9.4  
 **Requires PHP:** 7.4  
-**Stable tag:** 1.0.3
+**Stable tag:** 1.0.4
 **License:** GPLv2 or later  
 **License URI:** [https://www.gnu.org/licenses/gpl-2.0.html](https://www.gnu.org/licenses/gpl-2.0.html)
 
@@ -115,6 +115,19 @@ Yes — sensitive data is hashed. However, you must still handle user consent on
 
 ## Changelog
 
+### 1.0.4
+
+- **Non-blocking Asynchronous CAPI Dispatch**: Implemented high-performance client dispatch pipeline via `navigator.sendBeacon()`, `fetch(keepalive: true)`, and AJAX fallback so server-side tracking never slows down page navigation.
+- **Dedicated REST API Intake**: Added `/wp-json/w3-pixel-capi/v1/event` endpoint to safely ingest client events and forward to Meta without blocking PHP page rendering.
+- **Full Page-Caching Compatibility**: Added `/wp-json/w3-pixel-capi/v1/dynamic-options` endpoint ensuring fresh nonces, user matching data, and cart states even under aggressive page caching (WP Rocket, LiteSpeed, Varnish, Cloudflare).
+- **Synchronized Deduplication**: Guaranteed 100% accurate deduplication using standardized RFC 4122 UUIDv4 `eventID` paired synchronously across browser `fbq('track')` and server CAPI dispatches.
+- **Advanced Matching Signal Persistence**: Added form input tracking (`w3_advanced_form_data` cookie) and persistent guest token (`_pbid` external_id) across subdomains to significantly elevate Event Match Quality (EMQ).
+- **Order Attribution Locking**: Preserved customer `_fbp` and `_fbc` parameters in WooCommerce order metadata (`_w3_fb_cookie`) to maintain attribution across delayed payment gateways and order status changes (`processing`, `completed`).
+- **Enhanced IP Normalization**: Cleaned and normalized client IP addresses against complex reverse proxies, Cloudflare, load balancers, IPv6 brackets, and port suffixes.
+- **Resilient Retry Queue & Safety Cap**: Equipped background database queue with a 5-attempt retry limit and self-healing WP-Cron runner to prevent dead event loops and Meta rate limiting.
+- **Admin Event & Failure Logging UI**: Integrated live diagnostics table in WordPress admin displaying recent dispatches, status badges (Success/Failed), Meta `fbtrace_id`, and a one-click log purge button.
+- **Live Connection Diagnostics**: Implemented Admin "Test Connection" tool to verify Pixel ID and Access Token directly with Meta's Graph API.
+
 ### 1.0.3
 
 - Added browsing side tracking
@@ -148,6 +161,10 @@ Yes — sensitive data is hashed. However, you must still handle user consent on
 ---
 
 ## Upgrade Notice
+
+### 1.0.4
+
+Major tracking architecture upgrade: non-blocking asynchronous Conversions API (CAPI), full page caching compatibility, UUIDv4 deduplication, advanced matching persistence, resilient retry queue, and admin failure logs.
 
 ### 1.0.1
 

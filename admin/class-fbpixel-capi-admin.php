@@ -112,6 +112,9 @@ class FBPixel_CAPI_Admin {
         if (isset($_POST['test_connection'])) {
             $this->handle_test_connection();
         }
+        if (isset($_POST['clear_logs'])) {
+            $this->handle_clear_logs();
+        }
         
         $settings = get_option(self::OPTION_NAME, array());
         ?>
@@ -135,10 +138,73 @@ class FBPixel_CAPI_Admin {
                     <h2><?php esc_html_e('Test Connection', 'w3-pixel-capi'); ?></h2>
                     <p><?php esc_html_e('Test your Conversions API connection to ensure everything is working correctly.', 'w3-pixel-capi'); ?></p>
                     
-                    <form method="post">
+                    <form method="post" style="display:inline-block; margin-right: 10px;">
                         <?php wp_nonce_field('fbpixel_capi_test_connection', 'fbpixel_capi_test_nonce'); ?>
                         <input type="submit" name="test_connection" class="button button-secondary" value="<?php esc_html_e('Test Connection', 'w3-pixel-capi'); ?>">
                     </form>
+
+                    <form method="post" style="display:inline-block;">
+                        <?php wp_nonce_field('fbpixel_capi_clear_logs', 'fbpixel_capi_clear_nonce'); ?>
+                        <input type="submit" name="clear_logs" class="button button-link-delete" value="<?php esc_html_e('Clear Logs', 'w3-pixel-capi'); ?>" onclick="return confirm('Are you sure you want to clear all logs?');">
+                    </form>
+
+                    <hr>
+
+                    <h2><?php esc_html_e('Recent Event & Failure Logs', 'w3-pixel-capi'); ?></h2>
+                    <p><?php esc_html_e('Displays recent API transmissions, failures, and retry statuses.', 'w3-pixel-capi'); ?></p>
+                    
+                    <?php
+                    $api_client = new FBPixel_CAPI_API_Client();
+                    $logs = $api_client->get_recent_logs(15);
+                    if (!empty($logs)):
+                    ?>
+                    <table class="widefat fixed striped" style="margin-top: 10px;">
+                        <thead>
+                            <tr>
+                                <th style="width: 140px;"><?php esc_html_e('Date / Time', 'w3-pixel-capi'); ?></th>
+                                <th style="width: 120px;"><?php esc_html_e('Event / Type', 'w3-pixel-capi'); ?></th>
+                                <th style="width: 90px;"><?php esc_html_e('Status', 'w3-pixel-capi'); ?></th>
+                                <th><?php esc_html_e('Details / Error Message', 'w3-pixel-capi'); ?></th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            <?php foreach ($logs as $log): 
+                                $status = esc_attr($log['status']);
+                                $badge_style = 'padding: 3px 8px; border-radius: 3px; font-weight: 600; text-transform: uppercase; font-size: 11px;';
+                                if ($status === 'success') {
+                                    $badge_style .= ' background: #d4edda; color: #155724;';
+                                } elseif ($status === 'error') {
+                                    $badge_style .= ' background: #f8d7da; color: #721c24;';
+                                } else {
+                                    $badge_style .= ' background: #fff3cd; color: #856404;';
+                                }
+                                $details = '';
+                                if (!empty($log['event_data'])) {
+                                    $decoded_data = json_decode($log['event_data'], true);
+                                    if (!empty($decoded_data['error_message'])) {
+                                        $details = $decoded_data['error_message'];
+                                    } elseif (!empty($decoded_data['endpoint'])) {
+                                        $details = 'Endpoint: ' . $decoded_data['endpoint'];
+                                    } elseif (!empty($decoded_data['status_code'])) {
+                                        $details = 'HTTP Status: ' . $decoded_data['status_code'];
+                                    }
+                                }
+                                if (empty($details) && !empty($log['response_data'])) {
+                                    $details = substr($log['response_data'], 0, 150);
+                                }
+                            ?>
+                            <tr>
+                                <td><?php echo esc_html($log['created_at']); ?></td>
+                                <td><strong><?php echo esc_html($log['event_name']); ?></strong></td>
+                                <td><span style="<?php echo esc_attr($badge_style); ?>"><?php echo esc_html($status); ?></span></td>
+                                <td><code style="word-break: break-all;"><?php echo esc_html($details ? $details : __('No extra details', 'w3-pixel-capi')); ?></code></td>
+                            </tr>
+                            <?php endforeach; ?>
+                        </tbody>
+                    </table>
+                    <?php else: ?>
+                    <p><em><?php esc_html_e('No log entries recorded yet.', 'w3-pixel-capi'); ?></em></p>
+                    <?php endif; ?>
                 </div>
                 
                 <div class="fbpixel-capi-sidebar">
@@ -420,5 +486,28 @@ class FBPixel_CAPI_Admin {
             );
         }
     }
-}
+    /**
+     * Handle clear logs action
+     */
+    private function handle_clear_logs() {
+        if (!wp_verify_nonce($_POST['fbpixel_capi_clear_nonce'], 'fbpixel_capi_clear_logs')) {
+            add_settings_error(
+                self::OPTION_NAME,
+                'invalid_nonce',
+                __('Security check failed. Please try again.', 'w3-pixel-capi'),
+                'error'
+            );
+            return;
+        }
 
+        $api_client = new FBPixel_CAPI_API_Client();
+        $api_client->clear_logs();
+
+        add_settings_error(
+            self::OPTION_NAME,
+            'logs_cleared',
+            __('All CAPI event and failure logs have been cleared.', 'w3-pixel-capi'),
+            'success'
+        );
+    }
+}

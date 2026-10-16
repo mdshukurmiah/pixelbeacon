@@ -39,9 +39,10 @@ class FBPixel_CAPI_API_Client {
      * 
      * @param array $events Array of event data
      * @param bool $allow_queue Whether to enqueue on failure
+     * @param bool $blocking Whether request should block
      * @return array|WP_Error Response data or error
      */
-    public function send_events($events, $allow_queue = true) {
+    public function send_events($events, $allow_queue = true, $blocking = true) {
         // Validate settings
         if (empty($this->settings['pixel_id']) || empty($this->settings['access_token'])) {
             return new WP_Error('missing_credentials', __('Pixel ID or Access Token is missing', 'w3-pixel-capi'));
@@ -57,7 +58,8 @@ class FBPixel_CAPI_API_Client {
         
         // Prepare request body
         $body = array(
-            'data' => $events
+            'data'          => $events,
+            'partner_agent' => 'w3pixelcapi'
         );
         
         // Add test event code if provided
@@ -67,17 +69,17 @@ class FBPixel_CAPI_API_Client {
         
         // Prepare request headers
         $headers = array(
-            'Content-Type' => 'application/json',
+            'Content-Type'  => 'application/json',
             'Authorization' => 'Bearer ' . $this->settings['access_token']
         );
         
         // Prepare request arguments
         $args = array(
-            'method' => 'POST',
-            'headers' => $headers,
-            'body' => wp_json_encode($body),
-            'timeout' => 30,
-            'blocking' => true,
+            'method'     => 'POST',
+            'headers'    => $headers,
+            'body'       => wp_json_encode($body),
+            'timeout'    => 30,
+            'blocking'   => (bool) $blocking,
             'user-agent' => 'WordPress/' . get_bloginfo('version') . '; ' . get_bloginfo('url')
         );
         
@@ -89,6 +91,11 @@ class FBPixel_CAPI_API_Client {
         // Send the request
         $response = wp_remote_post($endpoint, $args);
         
+        // Non-blocking requests return early
+        if (!$blocking) {
+            return array('status' => 'sent_async');
+        }
+
         // Handle response
         if (is_wp_error($response)) {
             $this->log_error('API Request Failed', $response->get_error_message(), $events);
@@ -122,7 +129,7 @@ class FBPixel_CAPI_API_Client {
         
         return array(
             'status_code' => $response_code,
-            'body' => json_decode($response_body, true)
+            'body'        => json_decode($response_body, true)
         );
     }
     
@@ -130,10 +137,11 @@ class FBPixel_CAPI_API_Client {
      * Send a single event to Facebook Conversions API
      * 
      * @param array $event_data Single event data
+     * @param bool $blocking Whether request should block
      * @return array|WP_Error Response data or error
      */
-    public function send_event($event_data) {
-        return $this->send_events(array($event_data));
+    public function send_event($event_data, $blocking = true) {
+        return $this->send_events(array($event_data), true, $blocking);
     }
 
     /**
@@ -149,11 +157,11 @@ class FBPixel_CAPI_API_Client {
         $wpdb->insert(
             $table_name,
             array(
-                'event_data' => wp_json_encode($event_data),
-                'attempts' => 0,
-                'last_error' => $error_message,
+                'event_data'      => wp_json_encode($event_data),
+                'attempts'        => 0,
+                'last_error'      => $error_message,
                 'next_attempt_at' => current_time('mysql'),
-                'created_at' => current_time('mysql')
+                'created_at'      => current_time('mysql')
             ),
             array('%s', '%d', '%s', '%s', '%s')
         );
@@ -201,14 +209,22 @@ class FBPixel_CAPI_API_Client {
             }
 
             $attempts = (int) $row['attempts'] + 1;
+
+            // Maximum 5 retry attempts (avoids queue bloat on permanent API issues)
+            if ($attempts >= 5) {
+                $this->log_error('Queue Retry Exhausted', 'Event dropped after 5 failed attempts: ' . $result->get_error_message(), array($event_data));
+                $wpdb->delete($table_name, array('id' => (int) $row['id']), array('%d'));
+                continue;
+            }
+
             $backoff = min(3600, 300 * $attempts);
             $next_attempt = date('Y-m-d H:i:s', time() + $backoff);
 
             $wpdb->update(
                 $table_name,
                 array(
-                    'attempts' => $attempts,
-                    'last_error' => $result->get_error_message(),
+                    'attempts'        => $attempts,
+                    'last_error'      => $result->get_error_message(),
                     'next_attempt_at' => $next_attempt
                 ),
                 array('id' => (int) $row['id']),
@@ -247,109 +263,79 @@ class FBPixel_CAPI_API_Client {
      */
     private function log_request($endpoint, $body, $args) {
         $log_data = array(
-            'type' => 'request',
-            'endpoint' => $endpoint,
-            'body' => $body,
-            'headers' => $args['headers'],
+            'type'      => 'request',
+            'endpoint'  => $endpoint,
+            'body'      => $body,
             'timestamp' => current_time('mysql')
         );
         
-        $this->write_log('API Request', $log_data);
+        $this->save_log('API Request', $log_data, 'pending');
     }
     
     /**
      * Log API response for debugging
      * 
-     * @param int $status_code Response status code
+     * @param int $status_code HTTP status code
      * @param string $response_body Response body
-     * @param array $events Original events data
+     * @param array $events Events sent
      */
     private function log_response($status_code, $response_body, $events) {
         $log_data = array(
-            'type' => 'response',
+            'type'        => 'response',
             'status_code' => $status_code,
-            'response_body' => $response_body,
-            'events_count' => count($events),
-            'timestamp' => current_time('mysql')
+            'body'        => json_decode($response_body, true),
+            'events'      => $events,
+            'timestamp'   => current_time('mysql')
         );
         
-        $this->write_log('API Response', $log_data);
+        $status = ($status_code >= 200 && $status_code < 300) ? 'success' : 'error';
+        $this->save_log('API Response', $log_data, $status);
     }
     
     /**
-     * Log error for debugging
+     * Log API error for debugging
      * 
      * @param string $error_type Error type
      * @param string $error_message Error message
-     * @param array $events Events data
+     * @param array $events Events being processed
      */
     private function log_error($error_type, $error_message, $events) {
         $log_data = array(
-            'type' => 'error',
-            'error_type' => $error_type,
+            'type'          => 'error',
+            'error_type'    => $error_type,
             'error_message' => $error_message,
-            'events_count' => count($events),
-            'timestamp' => current_time('mysql')
+            'events'        => $events,
+            'timestamp'     => current_time('mysql')
         );
         
-        $this->write_log('API Error', $log_data);
+        $this->save_log('API Error', $log_data, 'error');
     }
     
     /**
-     * Write log to database
+     * Save log entry to database
      * 
-     * @param string $event_name Event name
-     * @param array $log_data Log data
+     * @param string $event_name Event or log name
+     * @param array $data Log data
+     * @param string $status Status (success, error, pending)
      */
-    private function write_log($event_name, $log_data) {
+    private function save_log($event_name, $data, $status) {
         global $wpdb;
         
-        $table_name = $wpdb->prefix . 'fbpixel_capi_logs';
+        $table_name = $this->get_log_table_name();
         
         $wpdb->insert(
             $table_name,
             array(
-                'event_name' => $event_name,
-                'event_data' => wp_json_encode($log_data),
-                'status' => isset($log_data['type']) ? $log_data['type'] : 'info',
-                'created_at' => current_time('mysql')
+                'event_name'    => $event_name,
+                'event_data'    => wp_json_encode($data),
+                'response_data' => isset($data['body']) ? wp_json_encode($data['body']) : null,
+                'status'        => $status,
+                'created_at'    => current_time('mysql')
             ),
-            array('%s', '%s', '%s', '%s')
+            array('%s', '%s', '%s', '%s', '%s')
         );
     }
     
-    /**
-     * Test API connection
-     * 
-     * @return array|WP_Error Test result
-     */
-    public function test_connection() {
-        // Create a test PageView event
-        $test_event = array(
-            'event_name' => 'PageView',
-            'event_time' => time(),
-            'action_source' => 'website',
-            'event_source_url' => home_url(),
-            'user_data' => array(
-                'client_ip_address' => FBPixel_CAPI_Helpers::get_client_ip(),
-                'client_user_agent' => FBPixel_CAPI_Helpers::get_user_agent()
-            )
-        );
-        
-        // Add test event code for testing
-        $original_test_code = $this->settings['test_event_code'];
-        if (empty($original_test_code)) {
-            $this->settings['test_event_code'] = 'TEST12345';
-        }
-        
-        $result = $this->send_event($test_event);
-        
-        // Restore original test code
-        $this->settings['test_event_code'] = $original_test_code;
-        
-        return $result;
-    }
-
     /**
      * Get queue table name
      *
@@ -359,5 +345,68 @@ class FBPixel_CAPI_API_Client {
         global $wpdb;
         return $wpdb->prefix . 'fbpixel_capi_queue';
     }
-}
 
+    /**
+     * Get log table name
+     * 
+     * @return string Log table name
+     */
+    private function get_log_table_name() {
+        global $wpdb;
+        return $wpdb->prefix . 'fbpixel_capi_logs';
+    }
+    /**
+     * Test API connection with a test event
+     *
+     * @return array|WP_Error
+     */
+    public function test_connection() {
+        if (empty($this->settings['pixel_id']) || empty($this->settings['access_token'])) {
+            return new WP_Error('missing_credentials', __('Pixel ID or Access Token is missing', 'w3-pixel-capi'));
+        }
+
+        $test_event = array(
+            'event_name'       => 'PageView',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => home_url('/'),
+            'user_data'        => array(
+                'client_ip_address' => FBPixel_CAPI_Helpers::get_client_ip(),
+                'client_user_agent' => FBPixel_CAPI_Helpers::get_user_agent(),
+            ),
+            'custom_data'      => array(
+                'test_connection' => true
+            ),
+            'event_id'         => FBPixel_CAPI_Helpers::guidv4()
+        );
+
+        return $this->send_events(array($test_event), false, true);
+    }
+
+    /**
+     * Get recent logs
+     *
+     * @param int $limit
+     * @return array
+     */
+    public function get_recent_logs($limit = 20) {
+        global $wpdb;
+        $table_name = $this->get_log_table_name();
+        return $wpdb->get_results(
+            $wpdb->prepare("SELECT * FROM {$table_name} ORDER BY id DESC LIMIT %d", $limit),
+            ARRAY_A
+        );
+    }
+
+    /**
+     * Clear all logs
+     *
+     * @return bool
+     */
+    public function clear_logs() {
+        global $wpdb;
+        $table_name = $this->get_log_table_name();
+        return (bool) $wpdb->query("TRUNCATE TABLE {$table_name}");
+    }
+
+}

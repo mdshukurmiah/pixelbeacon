@@ -328,67 +328,69 @@ class FBPixel_CAPI_Admin {
         $enabled_events = isset($settings['enabled_events']) ? $settings['enabled_events'] : array();
         
         $available_events = array(
-            'PageView' => __('Page View', 'w3-pixel-capi'),
-            'AddToCart' => __('Add to Cart', 'w3-pixel-capi'),
-            'InitiateCheckout' => __('Initiate Checkout', 'w3-pixel-capi'),
-            'Purchase' => __('Purchase', 'w3-pixel-capi'),
-            'ViewContent' => __('View Content', 'w3-pixel-capi'),
-            'Search' => __('Search', 'w3-pixel-capi'),
-            'Lead' => __('Lead', 'w3-pixel-capi'),
-            'CompleteRegistration' => __('Complete Registration', 'w3-pixel-capi')
+            'PageView'             => __('Page View', 'w3-pixel-capi'),
+            'ViewContent'          => __('View Content (Product)', 'w3-pixel-capi'),
+            'ViewCategory'         => __('View Category (Category/Tag Archive)', 'w3-pixel-capi'),
+            'AddToCart'            => __('Add to Cart', 'w3-pixel-capi'),
+            'RemoveFromCart'       => __('Remove from Cart', 'w3-pixel-capi'),
+            'InitiateCheckout'     => __('Initiate Checkout', 'w3-pixel-capi'),
+            'AddPaymentInfo'       => __('Add Payment Info', 'w3-pixel-capi'),
+            'Purchase'             => __('Purchase', 'w3-pixel-capi'),
+            'AddToWishlist'        => __('Add to Wishlist', 'w3-pixel-capi'),
+            'Search'               => __('Search', 'w3-pixel-capi'),
+            'Lead'                 => __('Lead (Form Submissions)', 'w3-pixel-capi'),
+            'Contact'              => __('Contact', 'w3-pixel-capi'),
+            'CompleteRegistration' => __('Complete Registration', 'w3-pixel-capi'),
+            'CustomizeProduct'     => __('Customize Product (Variations)', 'w3-pixel-capi'),
+            'FirstOrder'           => __('First Order (Audience Trigger)', 'w3-pixel-capi'),
+            'ReturningCustomer'    => __('Returning Customer (Audience Trigger)', 'w3-pixel-capi'),
+            'VipClient'            => __('VIP Client (High LTV Trigger)', 'w3-pixel-capi'),
+        );
+
+        $descriptions = array(
+            'PageView'             => __('Track when users view any page on your website', 'w3-pixel-capi'),
+            'ViewContent'          => __('Track when users view single product pages with catalog parameters', 'w3-pixel-capi'),
+            'ViewCategory'         => __('Track when users view product category or tag archive pages', 'w3-pixel-capi'),
+            'AddToCart'            => __('Track when users add products to cart (Standard and AJAX)', 'w3-pixel-capi'),
+            'RemoveFromCart'       => __('Track when users remove products from cart', 'w3-pixel-capi'),
+            'InitiateCheckout'     => __('Track when users start checkout (Classic and Block checkout)', 'w3-pixel-capi'),
+            'AddPaymentInfo'       => __('Track when users select payment method during checkout', 'w3-pixel-capi'),
+            'Purchase'             => __('Track completed orders with LTV, transaction count, shipping and tax', 'w3-pixel-capi'),
+            'AddToWishlist'        => __('Track when users save products to wishlist (YITH & custom)', 'w3-pixel-capi'),
+            'Search'               => __('Track search queries and result product IDs', 'w3-pixel-capi'),
+            'Lead'                 => __('Track form inquiries (Contact Form 7, WPForms)', 'w3-pixel-capi'),
+            'Contact'              => __('Track contact submissions and support touches', 'w3-pixel-capi'),
+            'CompleteRegistration' => __('Track new user and customer registrations', 'w3-pixel-capi'),
+            'CustomizeProduct'     => __('Track when users select variable product attributes', 'w3-pixel-capi'),
+            'FirstOrder'           => __('Trigger custom audience event on first-time customer purchases', 'w3-pixel-capi'),
+            'ReturningCustomer'    => __('Trigger custom audience event on repeat buyer purchases', 'w3-pixel-capi'),
+            'VipClient'            => __('Trigger high-value audience event when customer LTV >= 500 or 5+ orders', 'w3-pixel-capi'),
         );
         
+        $woo_events = array('ViewContent', 'ViewCategory', 'AddToCart', 'RemoveFromCart', 'InitiateCheckout', 'AddPaymentInfo', 'Purchase', 'AddToWishlist', 'CustomizeProduct', 'FirstOrder', 'ReturningCustomer', 'VipClient');
+
         echo '<fieldset>';
         foreach ($available_events as $event_key => $event_label) {
             $checked = !empty($enabled_events[$event_key]) ? 'checked' : '';
             $disabled = '';
-            $description = '';
-            
-            // Add descriptions and disable unsupported events
-            switch ($event_key) {
-                case 'PageView':
-                    $description = __('Track when users view pages on your website', 'w3-pixel-capi');
-                    break;
-                case 'AddToCart':
-                case 'InitiateCheckout':
-                case 'Purchase':
-                    if (!class_exists('WooCommerce')) {
-                        $disabled = 'disabled';
-                        $description = __('Requires WooCommerce', 'w3-pixel-capi');
-                    } else {
-                        $descriptions = array(
-                            'AddToCart' => __('Track when users add products to cart', 'w3-pixel-capi'),
-                            'InitiateCheckout' => __('Track when users start the checkout process', 'w3-pixel-capi'),
-                            'Purchase' => __('Track completed purchases', 'w3-pixel-capi')
-                        );
-                        $description = $descriptions[$event_key];
-                    }
-                    break;
-                case 'ViewContent':
-                    if (!class_exists('WooCommerce')) {
-                        $disabled = 'disabled';
-                        $description = __('Requires WooCommerce', 'w3-pixel-capi');
-                    } else {
-                        $description = __('Track when users view product pages', 'w3-pixel-capi');
-                    }
-                    break;
-                default:
-                    $disabled = 'disabled';
-                    $description = __('Coming in future version', 'w3-pixel-capi');
-                    break;
+            $desc = isset($descriptions[$event_key]) ? $descriptions[$event_key] : '';
+
+            if (in_array($event_key, $woo_events, true) && !class_exists('WooCommerce')) {
+                $disabled = 'disabled';
+                $desc .= ' (' . __('Requires WooCommerce', 'w3-pixel-capi') . ')';
             }
             
-			printf(
-				'<label><input type="checkbox" name="%s[enabled_events][%s]" value="1" %s %s> %s</label><br>',
-				esc_attr(self::OPTION_NAME),
-				esc_attr($event_key),
-				$checked ? 'checked' : '',
-				$disabled ? 'disabled' : '',
-				esc_html($event_label)
-			);
+            printf(
+                '<label><input type="checkbox" name="%s[enabled_events][%s]" value="1" %s %s> %s</label><br>',
+                esc_attr(self::OPTION_NAME),
+                esc_attr($event_key),
+                $checked ? 'checked' : '',
+                $disabled ? 'disabled' : '',
+                esc_html($event_label)
+            );
             
-            if ($description) {
-               echo '<p class="description" style="margin-left: 25px; margin-top: 0;">' . esc_html($description) . '</p>';
+            if ($desc) {
+               echo '<p class="description" style="margin-left: 25px; margin-top: 2px; margin-bottom: 8px;">' . esc_html($desc) . '</p>';
             }
         }
         echo '</fieldset>';
@@ -476,10 +478,15 @@ class FBPixel_CAPI_Admin {
         // Sanitize Enabled Events
         if (!empty($input['enabled_events']) && is_array($input['enabled_events'])) {
             $sanitized['enabled_events'] = array();
-            $allowed_events = array('PageView', 'AddToCart', 'InitiateCheckout', 'Purchase', 'ViewContent', 'Search', 'Lead', 'CompleteRegistration');
+            $allowed_events = array(
+                'PageView', 'AddToCart', 'InitiateCheckout', 'Purchase', 'ViewContent',
+                'ViewCategory', 'RemoveFromCart', 'AddPaymentInfo', 'AddToWishlist',
+                'Search', 'Lead', 'Contact', 'CompleteRegistration', 'CustomizeProduct',
+                'FirstOrder', 'ReturningCustomer', 'VipClient'
+            );
             
             foreach ($input['enabled_events'] as $event => $value) {
-                if (in_array($event, $allowed_events) && !empty($value)) {
+                if (in_array($event, $allowed_events, true) && !empty($value)) {
                     $sanitized['enabled_events'][$event] = true;
                 }
             }

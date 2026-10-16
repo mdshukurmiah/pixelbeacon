@@ -18,6 +18,7 @@
         init: function () {
             this.initFormPersistence();
             this.initAjaxAddToCart();
+            this.initClientEvents();
             this.processQueuedEvents();
             this.fetchDynamicOptions();
         },
@@ -274,6 +275,68 @@
 
                 // Asynchronously dispatch fallback to CAPI
                 self.sendServerEvent('AddToCart', eventId, customData);
+            });
+        },
+
+        // 5. Interactive client-side events (CustomizeProduct, AddToWishlist, AddPaymentInfo)
+        initClientEvents: function () {
+            var self = this;
+
+            // CustomizeProduct: fires when variation is chosen on single product page
+            $(document).on('found_variation', '.variations_form', function (event, variation) {
+                if (!variation || !variation.variation_id) return;
+                var eventId = self.guidv4();
+                var params = {
+                    content_name: (variation.variation_description || $('h1.product_title').text() || '').trim(),
+                    content_ids: [String(variation.variation_id)],
+                    content_type: 'product',
+                    value: parseFloat(variation.display_price) || 0,
+                    currency: options.currency || 'USD'
+                };
+
+                if (window.fbq) {
+                    var trackOpts = { eventID: eventId };
+                    if (options.testEventCode) trackOpts.test_event_code = options.testEventCode;
+                    fbq('track', 'CustomizeProduct', params, trackOpts);
+                }
+                self.sendServerEvent('CustomizeProduct', eventId, params);
+            });
+
+            // AddToWishlist: clicks on wishlist buttons
+            $(document).on('click', '.add_to_wishlist, .yith-wcwl-add-button a, .tinvwl_add_to_wishlist_button', function () {
+                var $btn = $(this);
+                var pid = $btn.data('product-id') || $btn.attr('data-product-id') || '';
+                if (!pid) return;
+                var eventId = self.guidv4();
+                var params = {
+                    content_name: ($btn.closest('.product').find('.woocommerce-loop-product__title, .product_title').text() || '').trim(),
+                    content_ids: [String(pid)],
+                    content_type: 'product'
+                };
+
+                if (window.fbq) {
+                    var trackOpts = { eventID: eventId };
+                    if (options.testEventCode) trackOpts.test_event_code = options.testEventCode;
+                    fbq('track', 'AddToWishlist', params, trackOpts);
+                }
+                self.sendServerEvent('AddToWishlist', eventId, params);
+            });
+
+            // AddPaymentInfo: triggered when user changes payment method on checkout
+            $(document.body).on('change', 'input[name="payment_method"]', function () {
+                var method = $(this).val();
+                if (!method) return;
+                var eventId = self.guidv4();
+                var params = {
+                    payment_method: method
+                };
+
+                if (window.fbq) {
+                    var trackOpts = { eventID: eventId };
+                    if (options.testEventCode) trackOpts.test_event_code = options.testEventCode;
+                    fbq('track', 'AddPaymentInfo', params, trackOpts);
+                }
+                self.sendServerEvent('AddPaymentInfo', eventId, params);
             });
         },
 

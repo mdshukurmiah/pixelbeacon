@@ -55,6 +55,25 @@ class FBPixel_CAPI_Event_Tracker {
         if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('PageView')) {
             return;
         }
+
+        $post_type = get_post_type();
+        if (!$post_type) {
+            if (is_front_page()) {
+                $post_type = 'frontpage';
+            } elseif (function_exists('is_shop') && is_shop()) {
+                $post_type = 'shop';
+            } else {
+                $post_type = 'page';
+            }
+        }
+
+        $user_role = 'guest';
+        if (is_user_logged_in()) {
+            $current_user = wp_get_current_user();
+            if (!empty($current_user->roles)) {
+                $user_role = implode(', ', $current_user->roles);
+            }
+        }
         
         $event_id = $this->generate_event_id('PageView');
         $event_data = array(
@@ -63,7 +82,14 @@ class FBPixel_CAPI_Event_Tracker {
             'action_source'    => 'website',
             'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
             'user_data'        => $this->get_user_data(),
-            'custom_data'      => array(),
+            'custom_data'      => array(
+                'page_title' => wp_get_document_title(),
+                'post_type'  => $post_type,
+                'post_id'    => get_the_ID() ? (string) get_the_ID() : '',
+                'plugin'     => 'w3-pixel-server-side-tracking',
+                'user_role'  => $user_role,
+                'event_url'  => FBPixel_CAPI_Helpers::get_current_url()
+            ),
             'event_id'         => $event_id
         );
         
@@ -97,6 +123,9 @@ class FBPixel_CAPI_Event_Tracker {
                 $product_price = min($variation_prices['price']);
             }
         }
+
+        $category = $this->get_product_categories($product_id);
+        $tags = $this->get_product_tags($product_id);
         
         $event_id = $this->generate_event_id('ViewContent', (string) $product_id);
         $event_data = array(
@@ -109,7 +138,8 @@ class FBPixel_CAPI_Event_Tracker {
                 'content_ids'      => array((string) $product_id),
                 'content_type'     => 'product',
                 'content_name'     => $product->get_name(),
-                'content_category' => $this->get_product_categories($product_id),
+                'content_category' => $category,
+                'category_name'    => $category,
                 'value'            => (float) $product_price,
                 'currency'         => get_woocommerce_currency(),
                 'contents'         => array(
@@ -132,7 +162,103 @@ class FBPixel_CAPI_Event_Tracker {
             $event_data['custom_data']['brand'] = $brand;
         }
 
+        if (!empty($tags)) {
+            $event_data['custom_data']['tags'] = $tags;
+        }
+
         // Queue browser event with matching event_id and non-blocking CAPI relay
+        $this->queue_browser_event($event_data, false, true);
+    }
+
+    /**
+     * Track ViewCategory event (WooCommerce category & tag archives)
+     */
+    public function track_view_category() {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('ViewCategory') || !class_exists('WooCommerce')) {
+            return;
+        }
+
+        if (!is_product_category() && !is_product_tag()) {
+            return;
+        }
+
+        $term = get_queried_object();
+        if (!$term || empty($term->name)) {
+            return;
+        }
+
+        // Extract top product IDs currently displayed in category query
+        global $wp_query;
+        $content_ids = array();
+        if (!empty($wp_query->posts)) {
+            foreach ($wp_query->posts as $p) {
+                if (count($content_ids) >= 10) break;
+                $content_ids[] = (string) $p->ID;
+            }
+        }
+
+        $event_id = $this->generate_event_id('ViewCategory', (string) $term->term_id);
+        $event_data = array(
+            'event_name'       => 'ViewCategory',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_name'     => $term->name,
+                'content_category' => $term->name,
+                'category_name'    => $term->name,
+                'content_ids'      => $content_ids,
+                'content_type'     => 'product'
+            ),
+            'event_id'         => $event_id
+        );
+
+        $this->queue_browser_event($event_data, false, true);
+    }
+
+    /**
+     * Track Search event (Search results page)
+     */
+    public function track_search() {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('Search')) {
+            return;
+        }
+
+        if (!is_search()) {
+            return;
+        }
+
+        $query = get_search_query();
+        if (empty($query)) {
+            return;
+        }
+
+        global $wp_query;
+        $content_ids = array();
+        if (!empty($wp_query->posts)) {
+            foreach ($wp_query->posts as $p) {
+                if (count($content_ids) >= 10) break;
+                $content_ids[] = (string) $p->ID;
+            }
+        }
+
+        $event_id = $this->generate_event_id('Search', md5($query));
+        $event_data = array(
+            'event_name'       => 'Search',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'search_string'    => $query,
+                'content_ids'      => $content_ids,
+                'content_type'     => 'product',
+                'content_category' => 'Search Results'
+            ),
+            'event_id'         => $event_id
+        );
+
         $this->queue_browser_event($event_data, false, true);
     }
     
@@ -153,6 +279,11 @@ class FBPixel_CAPI_Event_Tracker {
         if (!$product) {
             return;
         }
+
+        $category = $this->get_product_categories($product_id);
+        $tags = $this->get_product_tags($product_id);
+        $sku = $product->get_sku();
+        $brand = $this->get_product_brand($product);
         
         $event_id = $this->generate_event_id('AddToCart', $target_id . '_' . $quantity);
         $event_data = array(
@@ -167,7 +298,8 @@ class FBPixel_CAPI_Event_Tracker {
                 'value'            => (float) $product->get_price() * (int) $quantity,
                 'currency'         => get_woocommerce_currency(),
                 'content_name'     => $product->get_name(),
-                'content_category' => $this->get_product_categories($product_id),
+                'content_category' => $category,
+                'category_name'    => $category,
                 'num_items'        => (int) $quantity,
                 'contents'         => array(
                     array(
@@ -179,6 +311,16 @@ class FBPixel_CAPI_Event_Tracker {
             ),
             'event_id'         => $event_id
         );
+
+        if (!empty($sku)) {
+            $event_data['custom_data']['content_sku'] = $sku;
+        }
+        if (!empty($brand)) {
+            $event_data['custom_data']['brand'] = $brand;
+        }
+        if (!empty($tags)) {
+            $event_data['custom_data']['tags'] = $tags;
+        }
 
         $is_ajax = (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_REQUEST['wc-ajax']);
 
@@ -192,6 +334,70 @@ class FBPixel_CAPI_Event_Tracker {
             $this->queue_browser_event($event_data, true, false);
             $this->send_event($event_data);
         }
+    }
+
+    /**
+     * Track RemoveFromCart event (WooCommerce)
+     *
+     * @param string $cart_item_key Cart item key
+     * @param WC_Cart $cart Cart instance
+     */
+    public function track_remove_from_cart($cart_item_key, $cart = null) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('RemoveFromCart') || !class_exists('WooCommerce')) {
+            return;
+        }
+
+        if (!$cart) {
+            $cart = WC()->cart;
+        }
+        if (!$cart) {
+            return;
+        }
+
+        $removed_item = isset($cart->removed_cart_contents[$cart_item_key]) ? $cart->removed_cart_contents[$cart_item_key] : null;
+        if (!$removed_item) {
+            return;
+        }
+
+        $target_id = !empty($removed_item['variation_id']) ? $removed_item['variation_id'] : $removed_item['product_id'];
+        $product = wc_get_product($target_id);
+        if (!$product) {
+            return;
+        }
+
+        $quantity = isset($removed_item['quantity']) ? (int) $removed_item['quantity'] : 1;
+        $price = (float) $product->get_price();
+        $category = $this->get_product_categories($removed_item['product_id']);
+
+        $event_id = $this->generate_event_id('RemoveFromCart', $target_id . '_' . $quantity);
+        $event_data = array(
+            'event_name'       => 'RemoveFromCart',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_name'     => $product->get_name(),
+                'content_ids'      => array((string) $target_id),
+                'content_type'     => 'product',
+                'value'            => $price * $quantity,
+                'currency'         => get_woocommerce_currency(),
+                'contents'         => array(
+                    array(
+                        'id'         => (string) $target_id,
+                        'quantity'   => $quantity,
+                        'item_price' => $price
+                    )
+                ),
+                'content_category' => $category,
+                'category_name'    => $category,
+                'num_items'        => $quantity
+            ),
+            'event_id'         => $event_id
+        );
+
+        $this->send_event($event_data);
+        $this->queue_browser_event($event_data, true, false);
     }
 
     /**
@@ -253,6 +459,9 @@ class FBPixel_CAPI_Event_Tracker {
         $event_id = $this->get_or_create_purchase_event_id($order);
 
         $event_data = $this->build_purchase_event_data($order, $event_id);
+        $orders_count = isset($event_data['_orders_count']) ? (int) $event_data['_orders_count'] : 1;
+        $ltv          = isset($event_data['_ltv']) ? (float) $event_data['_ltv'] : (float) $order->get_total();
+        unset($event_data['_orders_count'], $event_data['_ltv']);
 
         // Only fire if not already tracked (prevents duplicates on thank you page reloads)
         if (!$already_fired) {
@@ -262,6 +471,9 @@ class FBPixel_CAPI_Event_Tracker {
             // Queue browser event with the exact same event_id
             $this->queue_browser_event($event_data, false, false);
             $this->send_event($event_data);
+
+            // Optional Segment Triggers: FirstOrder, ReturningCustomer, VipClient
+            $this->maybe_track_customer_segments($order, $orders_count, $ltv);
         }
     }
 
@@ -300,7 +512,14 @@ class FBPixel_CAPI_Event_Tracker {
         $order->save();
 
         $event_data = $this->build_purchase_event_data($order, $event_id);
+        $orders_count = isset($event_data['_orders_count']) ? (int) $event_data['_orders_count'] : 1;
+        $ltv          = isset($event_data['_ltv']) ? (float) $event_data['_ltv'] : (float) $order->get_total();
+        unset($event_data['_orders_count'], $event_data['_ltv']);
+
         $this->send_event($event_data);
+
+        // Optional Segment Triggers: FirstOrder, ReturningCustomer, VipClient
+        $this->maybe_track_customer_segments($order, $orders_count, $ltv);
     }
 
     /**
@@ -313,6 +532,8 @@ class FBPixel_CAPI_Event_Tracker {
     private function build_purchase_event_data($order, $event_id) {
         $content_ids = array();
         $contents = array();
+        $content_names = array();
+        $all_categories = array();
         $total_quantity = 0;
         
         foreach ($order->get_items() as $item) {
@@ -320,6 +541,12 @@ class FBPixel_CAPI_Event_Tracker {
             $quantity = $item->get_quantity();
             $price = $quantity > 0 ? $item->get_total() / $quantity : 0;
             
+            $content_names[] = $item->get_name();
+            $cat = $this->get_product_categories($product_id);
+            if (!empty($cat) && !in_array($cat, $all_categories, true)) {
+                $all_categories[] = $cat;
+            }
+
             $content_ids[] = (string) $product_id;
             $contents[] = array(
                 'id'         => (string) $product_id,
@@ -329,33 +556,31 @@ class FBPixel_CAPI_Event_Tracker {
             $total_quantity += $quantity;
         }
 
+        $category_string = implode(', ', $all_categories);
+
         $custom_data = array(
-            'content_ids'  => $content_ids,
-            'content_type' => 'product',
-            'contents'     => $contents,
-            'value'        => (float) $order->get_total(),
-            'currency'     => $order->get_currency(),
-            'num_items'    => $total_quantity,
-            'order_id'     => (string) $order->get_id()
+            'content_name'     => implode(', ', $content_names),
+            'content_category' => $category_string,
+            'category_name'    => $category_string,
+            'content_ids'      => $content_ids,
+            'content_type'     => 'product',
+            'contents'         => $contents,
+            'value'            => (float) $order->get_total(),
+            'currency'         => $order->get_currency(),
+            'num_items'        => $total_quantity,
+            'order_id'         => (string) $order->get_id(),
+            'shipping_cost'    => (float) $order->get_shipping_total(),
+            'tax'              => (float) $order->get_total_tax()
         );
 
-        // Add Customer Totals and Lifetime Value (LTV) metrics
-        $customer_id = $order->get_customer_id();
-        if ($customer_id && function_exists('wc_get_orders')) {
-            $customer_orders = wc_get_orders(array(
-                'customer_id' => $customer_id,
-                'limit'       => -1,
-                'status'      => array('wc-completed', 'wc-processing')
-            ));
-            $orders_count = count($customer_orders);
-            $ltv = 0;
-            foreach ($customer_orders as $past_order) {
-                $ltv += (float) $past_order->get_total();
-            }
-            $custom_data['predicted_ltv'] = (float) round($ltv, 2);
-            $custom_data['transactions_count'] = (int) $orders_count;
-            $custom_data['average_order'] = $orders_count > 0 ? (float) round($ltv / $orders_count, 2) : (float) $order->get_total();
-        }
+        // Calculate Customer Lifetime Metrics (orders_count, ltv)
+        $customer_stats = $this->calculate_customer_order_stats($order);
+        $orders_count   = $customer_stats['orders_count'];
+        $ltv            = $customer_stats['ltv'];
+
+        $custom_data['predicted_ltv']      = (float) round($ltv, 2);
+        $custom_data['transactions_count'] = (int) $orders_count;
+        $custom_data['average_order']      = $orders_count > 0 ? (float) round($ltv / $orders_count, 2) : (float) $order->get_total();
 
         // Coupon details
         $coupons = $order->get_coupon_codes();
@@ -373,7 +598,7 @@ class FBPixel_CAPI_Event_Tracker {
             }
             $custom_data['shipping'] = implode(', ', $shipping_names);
         }
-        
+
         return array(
             'event_name'       => 'Purchase',
             'event_time'       => time(),
@@ -381,8 +606,320 @@ class FBPixel_CAPI_Event_Tracker {
             'event_source_url' => $order->get_checkout_order_received_url(),
             'user_data'        => $this->get_user_data_from_order($order),
             'custom_data'      => $custom_data,
-            'event_id'         => $event_id
+            'event_id'         => $event_id,
+            '_orders_count'    => $orders_count,
+            '_ltv'             => $ltv
         );
+    }
+
+    /**
+     * Calculate customer lifetime order count and total spend (LTV).
+     * For registered customers ($customer_id > 0), matches by customer_id.
+     * For guest orders:
+     *   1. First tries to match past orders with billing_email.
+     *   2. If guest order doesn't match with email, tries again to match with phone (billing_phone).
+     *
+     * @param WC_Order $order
+     * @return array array('orders_count' => int, 'ltv' => float)
+     */
+    private function calculate_customer_order_stats($order) {
+        $current_id    = (int) $order->get_id();
+        $customer_id   = (int) $order->get_customer_id();
+        $billing_email = sanitize_email($order->get_billing_email());
+        $billing_phone = trim((string) $order->get_billing_phone());
+
+        $matched_order_ids = array();
+        $valid_statuses = array('wc-completed', 'wc-processing', 'wc-on-hold', 'wc-pending', 'completed', 'processing', 'on-hold', 'pending');
+
+        if (!empty($customer_id)) {
+            // 1. Logged in customer: match by customer_id
+            $matched_order_ids = $this->find_orders_by_customer_id($customer_id, $valid_statuses);
+        } else {
+            // 2. Guest order:
+            // Step 1: Try to match with email
+            if (!empty($billing_email)) {
+                $email_order_ids = $this->find_orders_by_email($billing_email, $valid_statuses);
+                // Check if any past order (other than the current one) matched
+                $past_orders_by_email = array_diff($email_order_ids, array($current_id));
+                if (!empty($past_orders_by_email)) {
+                    $matched_order_ids = $email_order_ids;
+                }
+            }
+
+            // Step 2: If guest order doesn't match with email, try again to match with phone
+            if (empty($matched_order_ids) && !empty($billing_phone)) {
+                $phone_order_ids = $this->find_orders_by_phone($billing_phone, $valid_statuses);
+                $past_orders_by_phone = array_diff($phone_order_ids, array($current_id));
+                if (!empty($past_orders_by_phone)) {
+                    $matched_order_ids = $phone_order_ids;
+                }
+            }
+        }
+
+        // Always include the current order
+        if (!in_array($current_id, $matched_order_ids)) {
+            $matched_order_ids[] = $current_id;
+        }
+
+        $orders_count = count($matched_order_ids);
+        $ltv = 0.0;
+        foreach ($matched_order_ids as $oid) {
+            $o = ($oid == $current_id) ? $order : (function_exists('wc_get_order') ? wc_get_order($oid) : null);
+            if ($o && is_a($o, 'WC_Order')) {
+                $ltv += (float) $o->get_total();
+            }
+        }
+
+        return array(
+            'orders_count' => max(1, $orders_count),
+            'ltv'          => (float) round($ltv, 2)
+        );
+    }
+
+    /**
+     * Find orders by customer ID
+     *
+     * @param int $customer_id
+     * @param array $statuses
+     * @return array Order IDs
+     */
+    private function find_orders_by_customer_id($customer_id, $statuses) {
+        $order_ids = array();
+        if (function_exists('wc_get_orders')) {
+            $ids = wc_get_orders(array(
+                'limit'       => -1,
+                'customer_id' => (int) $customer_id,
+                'status'      => $statuses,
+                'return'      => 'ids',
+            ));
+            if (!empty($ids) && is_array($ids)) {
+                $order_ids = array_map('intval', $ids);
+            }
+        }
+        return $order_ids;
+    }
+
+    /**
+     * Find orders by billing email (with WC query and direct DB fallbacks for HPOS/CPT)
+     *
+     * @param string $email
+     * @param array $statuses
+     * @return array Order IDs
+     */
+    private function find_orders_by_email($email, $statuses) {
+        $order_ids = array();
+        if (function_exists('wc_get_orders')) {
+            $ids = wc_get_orders(array(
+                'limit'         => -1,
+                'billing_email' => $email,
+                'status'        => $statuses,
+                'return'        => 'ids',
+            ));
+            if (!empty($ids) && is_array($ids)) {
+                $order_ids = array_map('intval', $ids);
+            }
+        }
+
+        // Fallback to database queries
+        global $wpdb;
+        if (empty($order_ids) && !empty($wpdb)) {
+            // Check HPOS table if exists
+            $hpos_table = $wpdb->prefix . 'wc_orders';
+            $table_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $hpos_table));
+            if ($table_exists === $hpos_table) {
+                $status_clean = array_map('esc_sql', $statuses);
+                $status_in    = "'" . implode("','", $status_clean) . "'";
+                $hpos_ids = $wpdb->get_col($wpdb->prepare(
+                    "SELECT id FROM {$hpos_table} WHERE billing_email = %s AND status IN ({$status_in})",
+                    $email
+                ));
+                if (!empty($hpos_ids)) {
+                    $order_ids = array_merge($order_ids, array_map('intval', $hpos_ids));
+                }
+            }
+
+            // Check postmeta (legacy or HPOS synced)
+            $postmeta_ids = $wpdb->get_col($wpdb->prepare(
+                "SELECT DISTINCT pm.post_id FROM {$wpdb->postmeta} pm
+                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+                 WHERE pm.meta_key = '_billing_email' AND pm.meta_value = %s
+                 AND p.post_type = 'shop_order'
+                 AND p.post_status NOT IN ('trash', 'auto-draft')",
+                $email
+            ));
+            if (!empty($postmeta_ids)) {
+                $order_ids = array_merge($order_ids, array_map('intval', $postmeta_ids));
+            }
+        }
+
+        return array_values(array_unique(array_filter($order_ids)));
+    }
+
+    /**
+     * Find orders by billing phone (supports variations: local 01..., intl +8801..., raw digits, etc.)
+     *
+     * @param string $phone
+     * @param array $statuses
+     * @return array Order IDs
+     */
+    private function find_orders_by_phone($phone, $statuses) {
+        $order_ids = array();
+        $raw_phone = trim((string) $phone);
+        if (empty($raw_phone)) {
+            return $order_ids;
+        }
+
+        $phone_variants = array($raw_phone);
+        $digits = preg_replace('/[^0-9]/', '', $raw_phone);
+        if (!empty($digits)) {
+            $phone_variants[] = $digits;
+            // Bangladesh format detection (01X...)
+            if (strlen($digits) === 11 && strpos($digits, '01') === 0) {
+                $phone_variants[] = '+88' . $digits;
+                $phone_variants[] = '88' . $digits;
+                $phone_variants[] = substr($digits, 1); // 17XXXXXXXX
+            } elseif (strlen($digits) === 13 && strpos($digits, '8801') === 0) {
+                $local = '0' . substr($digits, 2); // 01XXXXXXXX
+                $phone_variants[] = $local;
+                $phone_variants[] = '+' . $digits;
+                $phone_variants[] = substr($digits, 3); // 17XXXXXXXX
+            } elseif (strlen($digits) === 10 && strpos($digits, '1') === 0) {
+                $phone_variants[] = '0' . $digits;
+                $phone_variants[] = '+880' . $digits;
+                $phone_variants[] = '880' . $digits;
+            }
+        }
+        $phone_variants = array_values(array_unique(array_filter($phone_variants)));
+
+        // 1. Try wc_get_orders with meta_query
+        if (function_exists('wc_get_orders')) {
+            $meta_queries = array('relation' => 'OR');
+            foreach ($phone_variants as $v) {
+                $meta_queries[] = array(
+                    'key'     => '_billing_phone',
+                    'value'   => $v,
+                    'compare' => '='
+                );
+            }
+            $ids = wc_get_orders(array(
+                'limit'      => -1,
+                'status'     => $statuses,
+                'meta_query' => $meta_queries,
+                'return'     => 'ids',
+            ));
+            if (!empty($ids) && is_array($ids)) {
+                $order_ids = array_merge($order_ids, array_map('intval', $ids));
+            }
+        }
+
+        // 2. Direct database query fallback
+        global $wpdb;
+        if (!empty($wpdb) && !empty($phone_variants)) {
+            $placeholders = implode(',', array_fill(0, count($phone_variants), '%s'));
+
+            // Check HPOS addresses table
+            $addr_table = $wpdb->prefix . 'wc_order_addresses';
+            $table_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $addr_table));
+            if ($table_exists === $addr_table) {
+                $hpos_addr_ids = $wpdb->get_col($wpdb->prepare(
+                    "SELECT DISTINCT order_id FROM {$addr_table} WHERE address_type = 'billing' AND phone IN ({$placeholders})",
+                    $phone_variants
+                ));
+                if (!empty($hpos_addr_ids)) {
+                    $order_ids = array_merge($order_ids, array_map('intval', $hpos_addr_ids));
+                }
+            }
+
+            // Check postmeta
+            $postmeta_ids = $wpdb->get_col($wpdb->prepare(
+                "SELECT DISTINCT pm.post_id FROM {$wpdb->postmeta} pm
+                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
+                 WHERE pm.meta_key = '_billing_phone' AND pm.meta_value IN ({$placeholders})
+                 AND p.post_type = 'shop_order'
+                 AND p.post_status NOT IN ('trash', 'auto-draft')",
+                $phone_variants
+            ));
+            if (!empty($postmeta_ids)) {
+                $order_ids = array_merge($order_ids, array_map('intval', $postmeta_ids));
+            }
+        }
+
+        return array_values(array_unique(array_filter($order_ids)));
+    }
+
+    /**
+     * Dispatch advanced audience segment events on purchase
+     */
+    private function maybe_track_customer_segments($order, $orders_count, $ltv) {
+        if ($order->get_meta('_w3_segments_event_fired', true)) {
+            return;
+        }
+        $order->update_meta_data('_w3_segments_event_fired', '1');
+        $order->save();
+
+        $user_data = $this->get_user_data_from_order($order);
+        $order_url = $order->get_checkout_order_received_url();
+
+        // 1. FirstOrder: ONLY fires on customer's first lifetime purchase (orders_count === 1)
+        if ($orders_count === 1 && $this->is_event_enabled('FirstOrder')) {
+            $first_order_data = array(
+                'event_name'       => 'FirstOrder',
+                'event_time'       => time(),
+                'action_source'    => 'website',
+                'event_source_url' => $order_url,
+                'user_data'        => $user_data,
+                'custom_data'      => array(
+                    'content_name' => 'First Order',
+                    'order_id'     => (string) $order->get_id(),
+                    'value'        => (float) $order->get_total(),
+                    'currency'     => $order->get_currency()
+                ),
+                'event_id'         => $this->generate_event_id('FirstOrder', (string) $order->get_id())
+            );
+            $this->send_event($first_order_data);
+            $this->queue_browser_event($first_order_data, false, false);
+        }
+
+        // 2. ReturningCustomer: Fires on repeat purchases (2 or more orders)
+        if ($orders_count > 1 && $this->is_event_enabled('ReturningCustomer')) {
+            $returning_data = array(
+                'event_name'       => 'ReturningCustomer',
+                'event_time'       => time(),
+                'action_source'    => 'website',
+                'event_source_url' => $order_url,
+                'user_data'        => $user_data,
+                'custom_data'      => array(
+                    'content_name'       => 'Returning Customer',
+                    'transactions_count' => (int) $orders_count,
+                    'average_order'      => $orders_count > 0 ? (float) round($ltv / $orders_count, 2) : (float) $order->get_total(),
+                    'predicted_ltv'      => (float) round($ltv, 2),
+                    'value'              => (float) $order->get_total()
+                ),
+                'event_id'         => $this->generate_event_id('ReturningCustomer', (string) $order->get_id())
+            );
+            $this->send_event($returning_data);
+            $this->queue_browser_event($returning_data, false, false);
+        }
+
+        // 3. VipClient: High-value repeat customers only (must have > 1 order AND (orders >= 5 OR ltv >= 5000))
+        if ($orders_count > 1 && ($orders_count >= 5 || $ltv >= 5000) && $this->is_event_enabled('VipClient')) {
+            $vip_data = array(
+                'event_name'       => 'VipClient',
+                'event_time'       => time(),
+                'action_source'    => 'website',
+                'event_source_url' => $order_url,
+                'user_data'        => $user_data,
+                'custom_data'      => array(
+                    'content_name'       => 'VIP Client',
+                    'transactions_count' => (int) $orders_count,
+                    'average_order'      => $orders_count > 0 ? (float) round($ltv / $orders_count, 2) : (float) $order->get_total(),
+                    'predicted_ltv'      => (float) round($ltv, 2)
+                ),
+                'event_id'         => $this->generate_event_id('VipClient', (string) $order->get_id())
+            );
+            $this->send_event($vip_data);
+            $this->queue_browser_event($vip_data, false, false);
+        }
     }
     
     /**
@@ -411,12 +948,28 @@ class FBPixel_CAPI_Event_Tracker {
         
         $content_ids = array();
         $contents = array();
+        $content_names = array();
+        $all_categories = array();
+        $all_tags = array();
         $total_quantity = 0;
         
         foreach ($cart->get_cart() as $cart_item) {
             $product_id = $cart_item['product_id'];
             $quantity = $cart_item['quantity'];
             $price = $quantity > 0 ? $cart_item['line_total'] / $quantity : 0;
+            
+            $product = isset($cart_item['data']) ? $cart_item['data'] : wc_get_product($product_id);
+            if ($product) {
+                $content_names[] = $product->get_name();
+                $cat = $this->get_product_categories($product_id);
+                if (!empty($cat) && !in_array($cat, $all_categories, true)) {
+                    $all_categories[] = $cat;
+                }
+                $t = $this->get_product_tags($product_id);
+                if (!empty($t) && !in_array($t, $all_tags, true)) {
+                    $all_tags[] = $t;
+                }
+            }
             
             $content_ids[] = (string) $product_id;
             $contents[] = array(
@@ -427,6 +980,24 @@ class FBPixel_CAPI_Event_Tracker {
             $total_quantity += $quantity;
         }
         
+        $cat_string = implode(', ', $all_categories);
+        $custom_data = array(
+            'content_name'     => implode(', ', $content_names),
+            'content_category' => $cat_string,
+            'category_name'    => $cat_string,
+            'content_ids'      => $content_ids,
+            'content_type'     => 'product',
+            'contents'         => $contents,
+            'value'            => (float) $cart->get_total('edit'),
+            'subtotal'         => (float) $cart->get_subtotal(),
+            'currency'         => get_woocommerce_currency(),
+            'num_items'        => $total_quantity
+        );
+
+        if (!empty($all_tags)) {
+            $custom_data['tags'] = implode(', ', $all_tags);
+        }
+        
         $event_id = $this->generate_event_id('InitiateCheckout', md5(serialize($content_ids)));
         $event_data = array(
             'event_name'       => 'InitiateCheckout',
@@ -434,19 +1005,268 @@ class FBPixel_CAPI_Event_Tracker {
             'action_source'    => 'website',
             'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
             'user_data'        => $this->get_user_data(),
-            'custom_data'      => array(
-                'content_ids'  => $content_ids,
-                'content_type' => 'product',
-                'contents'     => $contents,
-                'value'        => (float) $cart->get_total('edit'),
-                'currency'     => get_woocommerce_currency(),
-                'num_items'    => $total_quantity
-            ),
+            'custom_data'      => $custom_data,
             'event_id'         => $event_id
         );
         
         // Queue browser event to fire in footer
         $this->queue_browser_event($event_data, false, true);
+    }
+
+    /**
+     * Track AddPaymentInfo event (WooCommerce checkout)
+     *
+     * @param int $order_id
+     * @param array $posted_data
+     * @param WC_Order|null $order
+     */
+    public function track_add_payment_info($order_id, $posted_data = array(), $order = null) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('AddPaymentInfo') || !class_exists('WooCommerce')) {
+            return;
+        }
+
+        if (!$order && function_exists('wc_get_order')) {
+            $order = wc_get_order($order_id);
+        }
+        if (!$order) {
+            return;
+        }
+
+        $content_ids = array();
+        $contents = array();
+        $total_quantity = 0;
+        foreach ($order->get_items() as $item) {
+            $product_id = $item->get_product_id();
+            $quantity = $item->get_quantity();
+            $price = $quantity > 0 ? $item->get_total() / $quantity : 0;
+
+            $content_ids[] = (string) $product_id;
+            $contents[] = array(
+                'id'         => (string) $product_id,
+                'quantity'   => (int) $quantity,
+                'item_price' => (float) $price
+            );
+            $total_quantity += $quantity;
+        }
+
+        $payment_method = $order->get_payment_method_title() ? $order->get_payment_method_title() : $order->get_payment_method();
+
+        $event_id = $this->generate_event_id('AddPaymentInfo', (string) $order_id);
+        $event_data = array(
+            'event_name'       => 'AddPaymentInfo',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $this->get_user_data_from_order($order),
+            'custom_data'      => array(
+                'content_ids'    => $content_ids,
+                'content_type'   => 'product',
+                'value'          => (float) $order->get_total(),
+                'currency'       => $order->get_currency(),
+                'contents'       => $contents,
+                'num_items'      => $total_quantity,
+                'payment_method' => $payment_method
+            ),
+            'event_id'         => $event_id
+        );
+
+        $this->send_event($event_data);
+    }
+
+    /**
+     * Track AddToWishlist event
+     *
+     * @param int $product_id
+     */
+    public function track_add_to_wishlist($product_id) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('AddToWishlist') || !class_exists('WooCommerce')) {
+            return;
+        }
+
+        $product = wc_get_product($product_id);
+        if (!$product) {
+            return;
+        }
+
+        $category = $this->get_product_categories($product_id);
+        $price = (float) $product->get_price();
+
+        $event_id = $this->generate_event_id('AddToWishlist', (string) $product_id);
+        $event_data = array(
+            'event_name'       => 'AddToWishlist',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_name'     => $product->get_name(),
+                'content_ids'      => array((string) $product_id),
+                'content_type'     => 'product',
+                'value'            => $price,
+                'currency'         => get_woocommerce_currency(),
+                'contents'         => array(
+                    array(
+                        'id'         => (string) $product_id,
+                        'quantity'   => 1,
+                        'item_price' => $price
+                    )
+                ),
+                'content_category' => $category,
+                'category_name'    => $category
+            ),
+            'event_id'         => $event_id
+        );
+
+        $this->send_event($event_data);
+        $this->queue_browser_event($event_data, true, false);
+    }
+
+    /**
+     * Track CompleteRegistration event (New WordPress/Woo user registration)
+     *
+     * @param int $user_id
+     */
+    public function track_complete_registration($user_id) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('CompleteRegistration')) {
+            return;
+        }
+
+        $user = get_userdata($user_id);
+        if (!$user) {
+            return;
+        }
+
+        $user_data = $this->get_user_data();
+        if (!empty($user->user_email)) {
+            $user_data['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->user_email);
+        }
+        if (!empty($user->first_name)) {
+            $user_data['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->first_name);
+        }
+        if (!empty($user->last_name)) {
+            $user_data['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->last_name);
+        }
+        $user_data['external_id'] = FBPixel_CAPI_Helpers::normalize_and_hash((string) $user_id);
+
+        $event_id = $this->generate_event_id('CompleteRegistration', (string) $user_id);
+        $event_data = array(
+            'event_name'       => 'CompleteRegistration',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $user_data,
+            'custom_data'      => array(
+                'content_name' => $user->display_name ? $user->display_name : $user->user_login,
+                'status'       => 'complete',
+                'event_url'    => FBPixel_CAPI_Helpers::get_current_url()
+            ),
+            'event_id'         => $event_id
+        );
+
+        $this->send_event($event_data);
+        $this->queue_browser_event($event_data, true, false);
+    }
+
+    /**
+     * Track Lead event (Contact forms, subscription forms)
+     *
+     * @param array $data
+     */
+    public function track_lead($data = array()) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('Lead')) {
+            return;
+        }
+
+        $event_id = $this->generate_event_id('Lead', FBPixel_CAPI_Helpers::guidv4());
+        $form_name = !empty($data['content_name']) ? sanitize_text_field($data['content_name']) : wp_get_document_title();
+        $currency = function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'USD';
+
+        $event_data = array(
+            'event_name'       => 'Lead',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_name' => $form_name,
+                'category'     => !empty($data['category']) ? sanitize_text_field($data['category']) : 'Lead Form',
+                'value'        => !empty($data['value']) ? (float) $data['value'] : 0.0,
+                'currency'     => $currency
+            ),
+            'event_id'         => $event_id
+        );
+
+        $this->send_event($event_data);
+        $this->queue_browser_event($event_data, true, false);
+    }
+
+    /**
+     * Track Contact event
+     *
+     * @param array $data
+     */
+    public function track_contact($data = array()) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('Contact')) {
+            return;
+        }
+
+        $event_id = $this->generate_event_id('Contact', FBPixel_CAPI_Helpers::guidv4());
+        $page_title = !empty($data['content_name']) ? sanitize_text_field($data['content_name']) : wp_get_document_title();
+
+        $event_data = array(
+            'event_name'       => 'Contact',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_name' => $page_title,
+                'event_url'    => FBPixel_CAPI_Helpers::get_current_url()
+            ),
+            'event_id'         => $event_id
+        );
+
+        $this->send_event($event_data);
+        $this->queue_browser_event($event_data, true, false);
+    }
+
+    /**
+     * Track CustomizeProduct event (Variable product configuration)
+     *
+     * @param int $product_id
+     * @param int $variation_id
+     */
+    public function track_customize_product($product_id, $variation_id = 0) {
+        if (FBPixel_CAPI_Helpers::is_bot_request() || !$this->is_event_enabled('CustomizeProduct') || !class_exists('WooCommerce')) {
+            return;
+        }
+
+        $target_id = $variation_id ? $variation_id : $product_id;
+        $product = wc_get_product($target_id);
+        if (!$product) {
+            return;
+        }
+
+        $price = (float) $product->get_price();
+        $event_id = $this->generate_event_id('CustomizeProduct', (string) $target_id);
+        $event_data = array(
+            'event_name'       => 'CustomizeProduct',
+            'event_time'       => time(),
+            'action_source'    => 'website',
+            'event_source_url' => FBPixel_CAPI_Helpers::get_current_url(),
+            'user_data'        => $this->get_user_data(),
+            'custom_data'      => array(
+                'content_name' => $product->get_name(),
+                'content_ids'  => array((string) $target_id),
+                'content_type' => 'product',
+                'value'        => $price,
+                'currency'     => get_woocommerce_currency()
+            ),
+            'event_id'         => $event_id
+        );
+
+        $this->send_event($event_data);
+        $this->queue_browser_event($event_data, true, false);
     }
     
     /**
@@ -756,6 +1576,26 @@ class FBPixel_CAPI_Event_Tracker {
         
         return implode(', ', $categories);
     }
+
+    /**
+     * Get product tags
+     *
+     * @param int $product_id Product ID
+     * @return string Product tags
+     */
+    private function get_product_tags($product_id) {
+        $terms = get_the_terms($product_id, 'product_tag');
+        if (empty($terms) || is_wp_error($terms)) {
+            return '';
+        }
+
+        $tags = array();
+        foreach ($terms as $term) {
+            $tags[] = $term->name;
+        }
+
+        return implode(', ', $tags);
+    }
     
     /**
      * Generate unique RFC 4122 UUIDv4 event ID for deduplication
@@ -776,10 +1616,15 @@ class FBPixel_CAPI_Event_Tracker {
      * @return bool Whether event is enabled
      */
     private function is_event_enabled($event_name) {
-        if (empty($this->settings['enabled_events'])) {
-            return false;
+        if (!isset($this->settings['enabled_events'])) {
+            return true;
+        }
+
+        if (isset($this->settings['enabled_events'][$event_name])) {
+            return !empty($this->settings['enabled_events'][$event_name]);
         }
         
-        return !empty($this->settings['enabled_events'][$event_name]);
+        // Newly added events default to enabled
+        return true;
     }
 }

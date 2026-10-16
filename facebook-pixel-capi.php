@@ -161,6 +161,11 @@ class FacebookPixelCAPI {
             $this->admin = new FBPixel_CAPI_Admin();
         }
 
+        // Global hooks for non-WooCommerce events
+        add_action('user_register', array($this, 'track_complete_registration'));
+        add_action('wpcf7_mail_sent', array($this, 'track_lead_cf7'));
+        add_action('wpforms_process_complete', array($this, 'track_lead_wpforms'), 10, 4);
+
         // Auto-migrate database tables and indexes if version updated
         $this->maybe_update_db();
     }
@@ -181,9 +186,16 @@ class FacebookPixelCAPI {
         // Standard WooCommerce events
         add_action('template_redirect', array($this, 'maybe_track_initiate_checkout'));
         add_action('woocommerce_add_to_cart', array($this, 'track_add_to_cart'), 10, 6);
+        add_action('woocommerce_cart_item_removed', array($this, 'track_remove_from_cart'), 10, 2);
+        add_action('woocommerce_checkout_order_processed', array($this, 'track_add_payment_info'), 10, 3);
         add_action('woocommerce_thankyou', array($this, 'track_purchase'), 10, 1);
         add_action('woocommerce_before_checkout_form', array($this, 'track_initiate_checkout'));
         add_action('wp_head', array($this, 'track_view_content'), 5);
+        add_action('wp_head', array($this, 'track_view_category'), 6);
+        add_action('wp_head', array($this, 'track_search'), 7);
+
+        // Wishlist integrations (YITH)
+        add_action('yith_wcwl_added_to_wishlist', array($this, 'track_add_to_wishlist'), 10, 1);
 
         // Track completed/processing purchases triggered by external gateways/webhooks
         add_action('woocommerce_order_status_completed', array($this, 'track_purchase_status_change'), 10, 2);
@@ -228,6 +240,7 @@ class FacebookPixelCAPI {
             'dynamicOptionsUrl'   => esc_url_raw(rest_url('w3-pixel-capi/v1/dynamic-options')),
             'fetchDynamicOptions' => true,
             'cookieDomain'        => FBPixel_CAPI_Helpers::get_cookie_domain(),
+            'currency'            => function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'USD',
             'debug'               => !empty($settings['debug_mode']),
         ));
     }
@@ -267,9 +280,18 @@ class FacebookPixelCAPI {
                 'InitiateCheckout'     => true,
                 'Purchase'             => true,
                 'ViewContent'          => true,
-                'Search'               => false,
-                'Lead'                 => false,
-                'CompleteRegistration' => false
+                'ViewCategory'         => true,
+                'RemoveFromCart'       => true,
+                'AddPaymentInfo'       => true,
+                'AddToWishlist'        => true,
+                'Search'               => true,
+                'Lead'                 => true,
+                'Contact'              => true,
+                'CompleteRegistration' => true,
+                'CustomizeProduct'     => true,
+                'FirstOrder'           => true,
+                'ReturningCustomer'    => true,
+                'VipClient'            => true
             ),
             'debug_mode'      => false,
             'enable_ldu'      => false
@@ -481,12 +503,17 @@ class FacebookPixelCAPI {
         }
 
         $settings = get_option('fbpixel_capi_settings', array());
-        $allowed_events = array('PageView', 'AddToCart', 'InitiateCheckout', 'Purchase', 'ViewContent', 'Search', 'Lead', 'CompleteRegistration');
+        $allowed_events = array(
+            'PageView', 'AddToCart', 'InitiateCheckout', 'Purchase', 'ViewContent',
+            'ViewCategory', 'RemoveFromCart', 'AddPaymentInfo', 'AddToWishlist',
+            'Search', 'Lead', 'Contact', 'CompleteRegistration', 'CustomizeProduct',
+            'FirstOrder', 'ReturningCustomer', 'VipClient'
+        );
         if (!in_array($event_name, $allowed_events, true)) {
             wp_send_json_error(array('message' => 'Invalid event'), 400);
         }
 
-        if (empty($settings['enabled_events'][$event_name])) {
+        if (isset($settings['enabled_events']) && array_key_exists($event_name, $settings['enabled_events']) && empty($settings['enabled_events'][$event_name])) {
             wp_send_json_success(array('skipped' => 'event_disabled'));
         }
 
@@ -600,6 +627,103 @@ class FacebookPixelCAPI {
     public function track_view_content() {
         if (isset($this->event_tracker)) {
             $this->event_tracker->track_view_content();
+        }
+    }
+
+    /**
+     * Track view category event
+     */
+    public function track_view_category() {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->track_view_category();
+        }
+    }
+
+    /**
+     * Track search event
+     */
+    public function track_search() {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->track_search();
+        }
+    }
+
+    /**
+     * Track remove from cart event
+     */
+    public function track_remove_from_cart($cart_item_key, $cart = null) {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->track_remove_from_cart($cart_item_key, $cart);
+        }
+    }
+
+    /**
+     * Track add payment info event
+     */
+    public function track_add_payment_info($order_id, $posted_data = array(), $order = null) {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->track_add_payment_info($order_id, $posted_data, $order);
+        }
+    }
+
+    /**
+     * Track add to wishlist event
+     */
+    public function track_add_to_wishlist($product_id) {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->track_add_to_wishlist($product_id);
+        }
+    }
+
+    /**
+     * Track complete registration event
+     */
+    public function track_complete_registration($user_id) {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->track_complete_registration($user_id);
+        }
+    }
+
+    /**
+     * Track Contact Form 7 lead
+     */
+    public function track_lead_cf7($contact_form) {
+        if (isset($this->event_tracker) && is_object($contact_form) && method_exists($contact_form, 'title')) {
+            $this->event_tracker->track_lead(array(
+                'content_name' => $contact_form->title(),
+                'category'     => 'Contact Form 7'
+            ));
+        }
+    }
+
+    /**
+     * Track WPForms lead
+     */
+    public function track_lead_wpforms($fields, $entry, $form_data, $entry_id) {
+        if (isset($this->event_tracker)) {
+            $title = !empty($form_data['settings']['form_title']) ? $form_data['settings']['form_title'] : 'WPForms';
+            $this->event_tracker->track_lead(array(
+                'content_name' => $title,
+                'category'     => 'WPForms'
+            ));
+        }
+    }
+
+    /**
+     * Track contact event
+     */
+    public function track_contact($data = array()) {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->track_contact($data);
+        }
+    }
+
+    /**
+     * Track customize product event
+     */
+    public function track_customize_product($product_id, $variation_id = 0) {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->track_customize_product($product_id, $variation_id);
         }
     }
 

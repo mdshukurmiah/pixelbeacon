@@ -103,13 +103,18 @@ class FBPixel_CAPI_REST_API {
         }
 
         // Verify event is supported and enabled in plugin settings
-        $allowed_events = array('PageView', 'AddToCart', 'InitiateCheckout', 'Purchase', 'ViewContent', 'Search', 'Lead', 'CompleteRegistration');
+        $allowed_events = array(
+            'PageView', 'AddToCart', 'InitiateCheckout', 'Purchase', 'ViewContent',
+            'ViewCategory', 'RemoveFromCart', 'AddPaymentInfo', 'AddToWishlist',
+            'Search', 'Lead', 'Contact', 'CompleteRegistration', 'CustomizeProduct',
+            'FirstOrder', 'ReturningCustomer', 'VipClient'
+        );
         if (!in_array($event_name, $allowed_events, true)) {
             return new WP_Error('invalid_event_name', __('Event is not supported', 'w3-pixel-capi'), array('status' => 400));
         }
 
         $settings = get_option('fbpixel_capi_settings', array());
-        if (empty($settings['enabled_events'][$event_name])) {
+        if (isset($settings['enabled_events']) && array_key_exists($event_name, $settings['enabled_events']) && empty($settings['enabled_events'][$event_name])) {
             return new WP_REST_Response(array('success' => true, 'skipped' => 'event_disabled'), 200);
         }
 

@@ -85,9 +85,6 @@ class PixelBeacon {
      * Initialize the plugin
      */
     private function init() {
-        // Load plugin text domain
-        add_action('plugins_loaded', array($this, 'load_textdomain'));
-        
         // Include required files
         $this->include_files();
         
@@ -213,12 +210,6 @@ class PixelBeacon {
         add_action('woocommerce_order_status_processing', array($this, 'track_purchase_status_change'), 10, 2);
     }
     
-    /**
-     * Load plugin text domain
-     */
-    public function load_textdomain() {
-        load_plugin_textdomain('pixelbeacon', false, dirname(PIXELBEACON_PLUGIN_BASENAME) . '/languages');
-    }
 
     /**
      * Enqueue frontend tracking scripts
@@ -525,6 +516,7 @@ class PixelBeacon {
             wp_send_json_success(array('skipped' => 'bot'));
         }
 
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Public analytics tracking intake callable by unauthenticated visitors on cached pages.
         $event_name = isset($_POST['event_name']) ? sanitize_text_field(wp_unslash($_POST['event_name'])) : '';
         if (empty($event_name)) {
             wp_send_json_error(array('message' => 'Missing event name'), 400);
@@ -545,15 +537,22 @@ class PixelBeacon {
             wp_send_json_success(array('skipped' => 'event_disabled'));
         }
 
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Public analytics tracking intake.
         $event_id = isset($_POST['event_id']) ? sanitize_text_field(wp_unslash($_POST['event_id'])) : PixelBeacon_Helpers::guidv4();
         
-        $raw_custom = isset($_POST['custom_data']) ? wp_unslash($_POST['custom_data']) : array();
-        $custom_data = is_array($raw_custom) ? $raw_custom : json_decode($raw_custom, true);
-        if (!is_array($custom_data)) {
-            $custom_data = array();
+        $custom_data = array();
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Public analytics tracking intake.
+        if (isset($_POST['custom_data'])) {
+            $raw_custom = sanitize_text_field(wp_unslash($_POST['custom_data']));
+            $decoded = json_decode($raw_custom, true);
+            if (is_array($decoded)) {
+                $custom_data = $decoded;
+            }
         }
 
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Public analytics tracking intake.
         $event_source_url = isset($_POST['event_source_url']) ? esc_url_raw(wp_unslash($_POST['event_source_url'])) : PixelBeacon_Helpers::get_current_url();
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Public analytics tracking intake.
         $referrer_url = isset($_POST['referrer_url']) ? esc_url_raw(wp_unslash($_POST['referrer_url'])) : '';
 
         // Build enriched user data using event tracker

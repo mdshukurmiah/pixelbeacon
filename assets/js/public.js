@@ -151,6 +151,7 @@
                     url: ajaxUrl,
                     data: {
                         action: 'pixelbeacon_event',
+                        nonce: options.nonce || '',
                         event_name: payload.event_name,
                         event_id: payload.event_id,
                         event_source_url: payload.event_source_url,

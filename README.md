@@ -3,7 +3,7 @@
 **Contributors:** Md Shukur Miah  
 **Tags:** pixel, conversions api, server-side tracking, woocommerce, meta pixel  
 **Requires at least:** 6.2  
-**Tested up to:** 7.1.3 
+**Tested up to:** 7.1  
 **Requires PHP:** 7.4  
 **Stable tag:** 1.0.5  
 **License:** GPLv2 or later  

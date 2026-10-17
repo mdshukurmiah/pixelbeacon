@@ -164,7 +164,7 @@ class PixelBeacon_API_Client {
         global $wpdb;
 
         $table_name = $this->get_queue_table_name();
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Custom queue table insert.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom queue table insert.
         $wpdb->insert(
             $table_name,
             array(
@@ -211,14 +211,14 @@ class PixelBeacon_API_Client {
         foreach ($rows as $row) {
             $event_data = json_decode($row['event_data'], true);
             if (empty($event_data) || !is_array($event_data)) {
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Custom queue table cleanup.
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom queue table cleanup.
                 $wpdb->delete($table_name, array('id' => (int) $row['id']), array('%d'));
                 continue;
             }
 
             $result = $this->send_events(array($event_data), false);
             if (!is_wp_error($result)) {
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Custom queue table cleanup.
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom queue table cleanup.
                 $wpdb->delete($table_name, array('id' => (int) $row['id']), array('%d'));
                 continue;
             }
@@ -228,7 +228,7 @@ class PixelBeacon_API_Client {
             // Maximum 5 retry attempts (avoids queue bloat on permanent API issues)
             if ($attempts >= 5) {
                 $this->log_error('Queue Retry Exhausted', 'Event dropped after 5 failed attempts: ' . $result->get_error_message(), array($event_data));
-                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Custom queue table cleanup.
+                // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom queue table cleanup.
                 $wpdb->delete($table_name, array('id' => (int) $row['id']), array('%d'));
                 continue;
             }
@@ -236,7 +236,7 @@ class PixelBeacon_API_Client {
             $backoff = min(3600, 300 * $attempts);
             $next_attempt = gmdate('Y-m-d H:i:s', time() + $backoff);
 
-            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Custom queue table update.
+            // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom queue table update.
             $wpdb->update(
                 $table_name,
                 array(
@@ -340,7 +340,7 @@ class PixelBeacon_API_Client {
         
         $table_name = $this->get_log_table_name();
         
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Custom log table insert.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom log table insert.
         $wpdb->insert(
             $table_name,
             array(
@@ -437,7 +437,7 @@ class PixelBeacon_API_Client {
         global $wpdb;
         $table_name = $this->get_log_table_name();
 
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Custom log table truncate.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom log table truncate.
         return (bool) $wpdb->query(
             $wpdb->prepare('TRUNCATE TABLE %i', $table_name)
         );
@@ -454,7 +454,7 @@ class PixelBeacon_API_Client {
         $table_name = $this->get_log_table_name();
         $days = max(1, (int) $days);
 
-        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Custom log table maintenance.
+        // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom log table maintenance.
         return $wpdb->query(
             $wpdb->prepare(
                 'DELETE FROM %i WHERE created_at < DATE_SUB(NOW(), INTERVAL %d DAY)',

@@ -322,7 +322,8 @@ class PixelBeacon_Event_Tracker {
             $event_data['custom_data']['tags'] = $tags;
         }
 
-        $is_ajax = (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_REQUEST['wc-ajax']);
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Check if request is a WooCommerce AJAX endpoint.
+        $is_ajax = (defined('WC_DOING_AJAX') && WC_DOING_AJAX) || (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_GET['wc-ajax']) || isset($_POST['wc-ajax']);
 
         if ($is_ajax) {
             // For AJAX AddToCart: Send CAPI directly now and relay matching event_id to browser via cart fragments
@@ -506,7 +507,9 @@ class PixelBeacon_Event_Tracker {
         }
 
         // Block frontend AJAX requests to avoid race conditions during checkout
-        if ((function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_REQUEST['wc-ajax'])) {
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Check if request is a WooCommerce AJAX endpoint.
+        $is_wc_ajax = (defined('WC_DOING_AJAX') && WC_DOING_AJAX) || (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_GET['wc-ajax']) || isset($_POST['wc-ajax']);
+        if ($is_wc_ajax) {
             return;
         }
 
@@ -723,38 +726,6 @@ class PixelBeacon_Event_Tracker {
             }
         }
 
-        // Fallback to database queries
-        global $wpdb;
-        if (empty($order_ids) && !empty($wpdb)) {
-            // Check HPOS table if exists
-            $hpos_table = $wpdb->prefix . 'wc_orders';
-            $table_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $hpos_table));
-            if ($table_exists === $hpos_table) {
-                $status_clean = array_map('esc_sql', $statuses);
-                $status_in    = "'" . implode("','", $status_clean) . "'";
-                $hpos_ids = $wpdb->get_col($wpdb->prepare(
-                    "SELECT id FROM {$hpos_table} WHERE billing_email = %s AND status IN ({$status_in})",
-                    $email
-                ));
-                if (!empty($hpos_ids)) {
-                    $order_ids = array_merge($order_ids, array_map('intval', $hpos_ids));
-                }
-            }
-
-            // Check postmeta (legacy or HPOS synced)
-            $postmeta_ids = $wpdb->get_col($wpdb->prepare(
-                "SELECT DISTINCT pm.post_id FROM {$wpdb->postmeta} pm
-                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                 WHERE pm.meta_key = '_billing_email' AND pm.meta_value = %s
-                 AND p.post_type = 'shop_order'
-                 AND p.post_status NOT IN ('trash', 'auto-draft')",
-                $email
-            ));
-            if (!empty($postmeta_ids)) {
-                $order_ids = array_merge($order_ids, array_map('intval', $postmeta_ids));
-            }
-        }
-
         return array_values(array_unique(array_filter($order_ids)));
     }
 
@@ -794,56 +765,18 @@ class PixelBeacon_Event_Tracker {
         }
         $phone_variants = array_values(array_unique(array_filter($phone_variants)));
 
-        // 1. Try wc_get_orders with meta_query
+        // Native WooCommerce order lookup via billing_phone (compatible with both HPOS and Classic postmeta)
         if (function_exists('wc_get_orders')) {
-            $meta_queries = array('relation' => 'OR');
             foreach ($phone_variants as $v) {
-                $meta_queries[] = array(
-                    'key'     => '_billing_phone',
-                    'value'   => $v,
-                    'compare' => '='
-                );
-            }
-            $ids = wc_get_orders(array(
-                'limit'      => -1,
-                'status'     => $statuses,
-                'meta_query' => $meta_queries,
-                'return'     => 'ids',
-            ));
-            if (!empty($ids) && is_array($ids)) {
-                $order_ids = array_merge($order_ids, array_map('intval', $ids));
-            }
-        }
-
-        // 2. Direct database query fallback
-        global $wpdb;
-        if (!empty($wpdb) && !empty($phone_variants)) {
-            $placeholders = implode(',', array_fill(0, count($phone_variants), '%s'));
-
-            // Check HPOS addresses table
-            $addr_table = $wpdb->prefix . 'wc_order_addresses';
-            $table_exists = $wpdb->get_var($wpdb->prepare("SHOW TABLES LIKE %s", $addr_table));
-            if ($table_exists === $addr_table) {
-                $hpos_addr_ids = $wpdb->get_col($wpdb->prepare(
-                    "SELECT DISTINCT order_id FROM {$addr_table} WHERE address_type = 'billing' AND phone IN ({$placeholders})",
-                    $phone_variants
+                $ids = wc_get_orders(array(
+                    'billing_phone' => $v,
+                    'status'        => $statuses,
+                    'limit'         => -1,
+                    'return'        => 'ids',
                 ));
-                if (!empty($hpos_addr_ids)) {
-                    $order_ids = array_merge($order_ids, array_map('intval', $hpos_addr_ids));
+                if (!empty($ids) && is_array($ids)) {
+                    $order_ids = array_merge($order_ids, array_map('intval', $ids));
                 }
-            }
-
-            // Check postmeta
-            $postmeta_ids = $wpdb->get_col($wpdb->prepare(
-                "SELECT DISTINCT pm.post_id FROM {$wpdb->postmeta} pm
-                 INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id
-                 WHERE pm.meta_key = '_billing_phone' AND pm.meta_value IN ({$placeholders})
-                 AND p.post_type = 'shop_order'
-                 AND p.post_status NOT IN ('trash', 'auto-draft')",
-                $phone_variants
-            ));
-            if (!empty($postmeta_ids)) {
-                $order_ids = array_merge($order_ids, array_map('intval', $postmeta_ids));
             }
         }
 

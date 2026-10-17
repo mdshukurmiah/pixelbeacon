@@ -104,7 +104,7 @@ class PixelBeacon_Helpers {
         }
 
         $scheme = is_ssl() ? 'https' : 'http';
-        $host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : parse_url(home_url(), PHP_URL_HOST);
+        $host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : wp_parse_url(home_url(), PHP_URL_HOST);
         $request_uri = isset($_SERVER['REQUEST_URI']) ? sanitize_text_field(wp_unslash($_SERVER['REQUEST_URI'])) : '/';
 
         return esc_url_raw($scheme . '://' . $host . $request_uri);
@@ -120,7 +120,7 @@ class PixelBeacon_Helpers {
             return COOKIE_DOMAIN;
         }
 
-        $host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : parse_url(home_url(), PHP_URL_HOST);
+        $host = isset($_SERVER['HTTP_HOST']) ? sanitize_text_field(wp_unslash($_SERVER['HTTP_HOST'])) : wp_parse_url(home_url(), PHP_URL_HOST);
         if (empty($host)) {
             return '';
         }
@@ -411,9 +411,15 @@ class PixelBeacon_Helpers {
      * @return array
      */
     public static function get_persistence_user_data($em = '', $fn = '', $ln = '', $ph = '') {
-        $raw = !empty($_COOKIE['pixelbeacon_form_data']) ? $_COOKIE['pixelbeacon_form_data'] : (!empty($_COOKIE['w3_advanced_form_data']) ? $_COOKIE['w3_advanced_form_data'] : '');
+        $raw = '';
+        if (isset($_COOKIE['pixelbeacon_form_data'])) {
+            $raw = sanitize_text_field(wp_unslash($_COOKIE['pixelbeacon_form_data']));
+        } elseif (isset($_COOKIE['w3_advanced_form_data'])) {
+            $raw = sanitize_text_field(wp_unslash($_COOKIE['w3_advanced_form_data']));
+        }
+
         if (!empty($raw)) {
-            $data = json_decode(stripslashes($raw), true);
+            $data = json_decode($raw, true);
             if (is_array($data)) {
                 if (empty($em) && !empty($data['email'])) {
                     $em = sanitize_email($data['email']);
@@ -697,7 +703,8 @@ class PixelBeacon_Helpers {
      */
     public static function log($message, $level = 'info') {
         if (defined('WP_DEBUG') && WP_DEBUG) {
-            error_log(sprintf('[Facebook Pixel CAPI] [%s] %s', strtoupper($level), $message));
+            // phpcs:ignore WordPress.PHP.DevelopmentFunctions.error_log_error_log -- Only active during WP_DEBUG troubleshooting.
+            error_log(sprintf('[PixelBeacon] [%s] %s', strtoupper($level), $message));
         }
     }
     
@@ -735,7 +742,9 @@ class PixelBeacon_Helpers {
      * @return string|null Facebook click ID
      */
     public static function get_facebook_click_id() {
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Reading public Facebook ad click ID from URL query string.
         if (!empty($_GET['fbclid'])) {
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Reading public Facebook ad click ID from URL query string.
             return sanitize_text_field(wp_unslash($_GET['fbclid']));
         }
         
@@ -784,7 +793,9 @@ class PixelBeacon_Helpers {
             return sanitize_text_field(wp_unslash($_COOKIE['_fbc']));
         }
 
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Reading public Facebook ad click ID from URL query string.
         if (!empty($_GET['fbclid'])) {
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Reading public Facebook ad click ID from URL query string.
             $fbclid = sanitize_text_field(wp_unslash($_GET['fbclid']));
             $fbc = 'fb.1.' . time() . '.' . $fbclid;
             self::set_cookie('_fbc', $fbc, 90); // 90 days

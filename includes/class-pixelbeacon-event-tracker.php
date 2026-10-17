@@ -1321,9 +1321,9 @@ class PixelBeacon_Event_Tracker {
         
         if (!empty($this->settings['debug_mode'])) {
             if (is_wp_error($result)) {
-                error_log('Facebook Pixel CAPI Error: ' . $result->get_error_message());
+                PixelBeacon_Helpers::log('Pixel Error: ' . $result->get_error_message(), 'error');
             } else {
-                error_log('Facebook Pixel CAPI Success: Event ' . $event_data['event_name'] . ' sent');
+                PixelBeacon_Helpers::log('Pixel Success: Event ' . $event_data['event_name'] . ' sent', 'info');
             }
         }
         

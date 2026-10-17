@@ -322,8 +322,8 @@ class PixelBeacon_Event_Tracker {
             $event_data['custom_data']['tags'] = $tags;
         }
 
-        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Check if request is a WooCommerce AJAX endpoint.
-        $is_ajax = (defined('WC_DOING_AJAX') && WC_DOING_AJAX) || (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_GET['wc-ajax']) || isset($_POST['wc-ajax']);
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.NonceVerification.Missing -- Check if request is a WooCommerce AJAX endpoint.
+        $is_ajax = (defined('WC_DOING_AJAX') && WC_DOING_AJAX) || (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_GET['wc-ajax']);
 
         if ($is_ajax) {
             // For AJAX AddToCart: Send CAPI directly now and relay matching event_id to browser via cart fragments
@@ -507,8 +507,8 @@ class PixelBeacon_Event_Tracker {
         }
 
         // Block frontend AJAX requests to avoid race conditions during checkout
-        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Check if request is a WooCommerce AJAX endpoint.
-        $is_wc_ajax = (defined('WC_DOING_AJAX') && WC_DOING_AJAX) || (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_GET['wc-ajax']) || isset($_POST['wc-ajax']);
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.NonceVerification.Missing -- Check if request is a WooCommerce AJAX endpoint.
+        $is_wc_ajax = (defined('WC_DOING_AJAX') && WC_DOING_AJAX) || (function_exists('wp_doing_ajax') && wp_doing_ajax()) || isset($_GET['wc-ajax']);
         if ($is_wc_ajax) {
             return;
         }

@@ -2,7 +2,7 @@
 
 **Contributors:** Md Shukur Miah  
 **Tags:** facebook, pixel, conversions api, server-side tracking, woocommerce, meta pixel, deduplication  
-**Requires at least:** 5.0  
+**Requires at least:** 6.2  
 **Tested up to:** 6.9.4  
 **Requires PHP:** 7.4  
 **Stable tag:** 1.0.5  

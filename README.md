@@ -1,15 +1,15 @@
 # PixelBeacon for WooCommerce
 
 **Contributors:** Md Shukur Miah  
-**Tags:** facebook, pixel, conversions api, server-side tracking, woocommerce, meta pixel, deduplication  
+**Tags:** pixel, conversions api, server-side tracking, woocommerce, meta pixel  
 **Requires at least:** 6.2  
-**Tested up to:** 6.9.4  
+**Tested up to:** 7.1.3 
 **Requires PHP:** 7.4  
 **Stable tag:** 1.0.5  
 **License:** GPLv2 or later  
 **License URI:** [https://www.gnu.org/licenses/gpl-2.0.html](https://www.gnu.org/licenses/gpl-2.0.html)  
 
-Enable Meta Pixel and server-side tracking using the Conversions API (CAPI) for WooCommerce with real-time deduplication, high Event Match Quality (EMQ), and full catalog parameter support.
+Meta Pixel and Conversions API (CAPI) tracking for WooCommerce with deduplication, high Event Match Quality (EMQ), and server-side signals.
 
 ---
 

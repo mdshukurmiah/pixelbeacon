@@ -811,9 +811,9 @@ class PixelBeacon {
         t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
         document,'script','https://connect.facebook.net/en_US/fbevents.js');
         <?php if (!empty($advanced_matching)): ?>
-        fbq('init', '<?php echo $pixel_id; ?>', <?php echo wp_json_encode($advanced_matching); ?>);
+        fbq('init', '<?php echo esc_js($pixel_id); ?>', <?php echo wp_json_encode($advanced_matching); ?>);
         <?php else: ?>
-        fbq('init', '<?php echo $pixel_id; ?>');
+        fbq('init', '<?php echo esc_js($pixel_id); ?>');
         <?php endif; ?>
         </script>
         <?php if ($pageview_enabled): ?>
@@ -845,15 +845,14 @@ class PixelBeacon {
         }
 
         $test_event_code = !empty($settings['test_event_code']) ? esc_js($settings['test_event_code']) : '';
-        $events_json = wp_json_encode($events);
         ?>
         <!-- Facebook Pixel Events (PixelBeacon for WooCommerce) -->
         <script>
         (function () {
-            var rawEvents = <?php echo $events_json; ?> || [];
+            var rawEvents = <?php echo wp_json_encode($events); ?> || [];
             if (!Array.isArray(rawEvents) || !rawEvents.length) return;
 
-            var testCode = '<?php echo $test_event_code; ?>';
+            var testCode = '<?php echo esc_js($test_event_code); ?>';
 
             for (var i = 0; i < rawEvents.length; i++) {
                 var evt = rawEvents[i] || {};

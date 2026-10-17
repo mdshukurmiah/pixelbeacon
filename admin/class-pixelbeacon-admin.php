@@ -126,9 +126,11 @@ class PixelBeacon_Admin {
      */
     public function render_settings_page() {
         // Handle form submissions
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified inside handle_test_connection().
         if (isset($_POST['test_connection'])) {
             $this->handle_test_connection();
         }
+        // phpcs:ignore WordPress.Security.NonceVerification.Missing -- Nonce verified inside handle_clear_logs().
         if (isset($_POST['clear_logs'])) {
             $this->handle_clear_logs();
         }
@@ -506,7 +508,8 @@ class PixelBeacon_Admin {
      */
     private function handle_test_connection() {
         // Verify nonce
-        if (!isset($_POST['pixelbeacon_test_nonce']) || !wp_verify_nonce($_POST['pixelbeacon_test_nonce'], 'pixelbeacon_test_connection')) {
+        $test_nonce = isset($_POST['pixelbeacon_test_nonce']) ? sanitize_text_field(wp_unslash($_POST['pixelbeacon_test_nonce'])) : '';
+        if (empty($test_nonce) || !wp_verify_nonce($test_nonce, 'pixelbeacon_test_connection')) {
             add_settings_error(
                 self::OPTION_NAME,
                 'invalid_nonce',
@@ -517,8 +520,8 @@ class PixelBeacon_Admin {
         }
         
         // Test API connection using form inputs if available, otherwise saved settings
-        $test_pixel_id = !empty($_POST['test_pixel_id']) ? sanitize_text_field($_POST['test_pixel_id']) : '';
-        $test_access_token = !empty($_POST['test_access_token']) ? sanitize_text_field($_POST['test_access_token']) : '';
+        $test_pixel_id = !empty($_POST['test_pixel_id']) ? sanitize_text_field(wp_unslash($_POST['test_pixel_id'])) : '';
+        $test_access_token = !empty($_POST['test_access_token']) ? sanitize_text_field(wp_unslash($_POST['test_access_token'])) : '';
 
         $api_client = new PixelBeacon_API_Client();
         $result = $api_client->test_connection($test_pixel_id, $test_access_token);
@@ -545,7 +548,8 @@ class PixelBeacon_Admin {
      * Handle clear logs action
      */
     private function handle_clear_logs() {
-        if (!isset($_POST['pixelbeacon_clear_nonce']) || !wp_verify_nonce($_POST['pixelbeacon_clear_nonce'], 'pixelbeacon_clear_logs')) {
+        $clear_nonce = isset($_POST['pixelbeacon_clear_nonce']) ? sanitize_text_field(wp_unslash($_POST['pixelbeacon_clear_nonce'])) : '';
+        if (empty($clear_nonce) || !wp_verify_nonce($clear_nonce, 'pixelbeacon_clear_logs')) {
             add_settings_error(
                 self::OPTION_NAME,
                 'invalid_nonce',

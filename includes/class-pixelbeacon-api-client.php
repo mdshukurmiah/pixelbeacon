@@ -194,7 +194,8 @@ class PixelBeacon_API_Client {
 
         $rows = $wpdb->get_results(
             $wpdb->prepare(
-                "SELECT * FROM {$table_name} WHERE next_attempt_at <= %s ORDER BY id ASC LIMIT %d",
+                'SELECT * FROM %i WHERE next_attempt_at <= %s ORDER BY id ASC LIMIT %d',
+                $table_name,
                 $now,
                 $limit
             ),
@@ -228,7 +229,7 @@ class PixelBeacon_API_Client {
             }
 
             $backoff = min(3600, 300 * $attempts);
-            $next_attempt = date('Y-m-d H:i:s', time() + $backoff);
+            $next_attempt = gmdate('Y-m-d H:i:s', time() + $backoff);
 
             $wpdb->update(
                 $table_name,
@@ -413,7 +414,7 @@ class PixelBeacon_API_Client {
         global $wpdb;
         $table_name = $this->get_log_table_name();
         return $wpdb->get_results(
-            $wpdb->prepare("SELECT * FROM {$table_name} ORDER BY id DESC LIMIT %d", $limit),
+            $wpdb->prepare('SELECT * FROM %i ORDER BY id DESC LIMIT %d', $table_name, $limit),
             ARRAY_A
         );
     }
@@ -426,7 +427,9 @@ class PixelBeacon_API_Client {
     public function clear_logs() {
         global $wpdb;
         $table_name = $this->get_log_table_name();
-        return (bool) $wpdb->query("TRUNCATE TABLE {$table_name}");
+        return (bool) $wpdb->query(
+            $wpdb->prepare('TRUNCATE TABLE %i', $table_name)
+        );
     }
 
     /**
@@ -441,7 +444,8 @@ class PixelBeacon_API_Client {
         $days = max(1, (int) $days);
         return $wpdb->query(
             $wpdb->prepare(
-                "DELETE FROM {$table_name} WHERE created_at < DATE_SUB(NOW(), INTERVAL %d DAY)",
+                'DELETE FROM %i WHERE created_at < DATE_SUB(NOW(), INTERVAL %d DAY)',
+                $table_name,
                 $days
             )
         );

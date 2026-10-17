@@ -1,6 +1,6 @@
 <?php
 /**
- * W3 Pixel CAPI Helpers
+ * PixelBeacon Helpers
  * 
  * Utility functions and helpers for high Event Match Quality (EMQ),
  * cookie persistence, and robust deduplication.
@@ -11,7 +11,26 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-class FBPixel_CAPI_Helpers {
+class PixelBeacon_Helpers {
+    
+    /**
+     * Get plugin settings with automatic backward compatibility migration
+     *
+     * @return array
+     */
+    public static function get_settings() {
+        $settings = get_option('pixelbeacon_settings');
+        if ($settings === false) {
+            $old = get_option('fbpixel_capi_settings');
+            if ($old !== false && is_array($old)) {
+                $settings = $old;
+                update_option('pixelbeacon_settings', $settings);
+            } else {
+                $settings = array();
+            }
+        }
+        return is_array($settings) ? $settings : array();
+    }
     
     /**
      * Generate an RFC 4122 compliant UUIDv4 for event deduplication
@@ -358,6 +377,9 @@ class FBPixel_CAPI_Helpers {
      * @return string SHA-256 hashed 16-byte random token
      */
     public static function get_pbid() {
+        if (!empty($_COOKIE['pixelbeacon_pbid'])) {
+            return sanitize_text_field(wp_unslash($_COOKIE['pixelbeacon_pbid']));
+        }
         if (!empty($_COOKIE['w3_pbid'])) {
             return sanitize_text_field(wp_unslash($_COOKIE['w3_pbid']));
         }
@@ -365,7 +387,7 @@ class FBPixel_CAPI_Helpers {
         $random = bin2hex(random_bytes(16));
         $pbid = hash('sha256', $random);
 
-        self::set_cookie('w3_pbid', $pbid, 365);
+        self::set_cookie('pixelbeacon_pbid', $pbid, 365);
 
         return $pbid;
     }
@@ -389,8 +411,9 @@ class FBPixel_CAPI_Helpers {
      * @return array
      */
     public static function get_persistence_user_data($em = '', $fn = '', $ln = '', $ph = '') {
-        if (!empty($_COOKIE['w3_advanced_form_data'])) {
-            $data = json_decode(stripslashes($_COOKIE['w3_advanced_form_data']), true);
+        $raw = !empty($_COOKIE['pixelbeacon_form_data']) ? $_COOKIE['pixelbeacon_form_data'] : (!empty($_COOKIE['w3_advanced_form_data']) ? $_COOKIE['w3_advanced_form_data'] : '');
+        if (!empty($raw)) {
+            $data = json_decode(stripslashes($raw), true);
             if (is_array($data)) {
                 if (empty($em) && !empty($data['email'])) {
                     $em = sanitize_email($data['email']);
@@ -560,7 +583,7 @@ class FBPixel_CAPI_Helpers {
             'ip'         => self::get_client_ip(),
         );
 
-        $order->update_meta_data('_w3_fb_cookie', $data);
+        $order->update_meta_data('_pixelbeacon_fb_cookie', $data);
         $order->save();
     }
 
@@ -575,7 +598,10 @@ class FBPixel_CAPI_Helpers {
         $fbc = '';
 
         if ($order && is_a($order, 'WC_Order')) {
-            $saved = $order->get_meta('_w3_fb_cookie', true);
+            $saved = $order->get_meta('_pixelbeacon_fb_cookie', true);
+            if (empty($saved)) {
+                $saved = $order->get_meta('_w3_fb_cookie', true);
+            }
             if (!empty($saved) && is_array($saved)) {
                 if (!empty($saved['fbp'])) {
                     $fbp = $saved['fbp'];
@@ -801,4 +827,9 @@ class FBPixel_CAPI_Helpers {
 
         $_COOKIE[$name] = $value;
     }
+}
+
+// Backward compatibility alias
+if (!class_exists('FBPixel_CAPI_Helpers')) {
+    class_alias('PixelBeacon_Helpers', 'FBPixel_CAPI_Helpers');
 }

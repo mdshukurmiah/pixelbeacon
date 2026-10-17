@@ -1,5 +1,5 @@
 /**
- * W3 Pixel CAPI Admin JavaScript
+ * PixelBeacon for WooCommerce Admin JavaScript
  */
 
 (function($) {
@@ -98,8 +98,12 @@
                     // Add loading state
                     $this.val('Testing...').prop('disabled', true);
                     
-                    // Submit the test form explicitly
-                    $('#fbpixel_test_connection_form').submit();
+                    // Submit the test form explicitly (support pixelbeacon and legacy IDs)
+                    var $form = $('#pixelbeacon_test_connection_form');
+                    if (!$form.length) {
+                        $form = $('#fbpixel_test_connection_form');
+                    }
+                    $form.submit();
                     
                     setTimeout(function() {
                         $this.val(originalText).prop('disabled', false);
@@ -117,7 +121,7 @@
             var $wooCommerceEvents = $('input[name*="[enabled_events][AddToCart]"], input[name*="[enabled_events][InitiateCheckout]"], input[name*="[enabled_events][Purchase]"]');
             
             // Check if WooCommerce is active
-            if ($('.fbpixel-capi-info-box').text().indexOf('WooCommerce Status: Not Active') !== -1) {
+            if ($('.pixelbeacon-info-box, .fbpixel-capi-info-box').text().indexOf('WooCommerce Status: Not Active') !== -1) {
                 $wooCommerceEvents.prop('disabled', true).closest('label').css('color', '#999');
             }
         }
@@ -125,35 +129,6 @@
         // Initialize event dependencies
         initEventDependencies();
         
-        /**
-         * Auto-save settings on change (optional feature)
-         */
-        function initAutoSave() {
-            var $inputs = $('#pixel_id, #access_token, #test_event_code, input[name*="enabled_events"], input[name*="debug_mode"]');
-            var saveTimeout;
-            
-            $inputs.on('change', function() {
-                clearTimeout(saveTimeout);
-                
-                saveTimeout = setTimeout(function() {
-                    // Show auto-save indicator
-                    var $indicator = $('<span class="fbpixel-capi-autosave">Saving...</span>');
-                    $('.wrap h1').append($indicator);
-                    
-                    // Remove indicator after 2 seconds
-                    setTimeout(function() {
-                        $indicator.fadeOut(function() {
-                            $(this).remove();
-                        });
-                    }, 2000);
-                }, 1000);
-            });
-        }
-        
-        // Uncomment to enable auto-save
-        // initAutoSave();
-        
     });
     
 })(jQuery);
-

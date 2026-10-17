@@ -1,6 +1,6 @@
 <?php
 /**
- * W3 Pixel CAPI REST API
+ * PixelBeacon REST API
  * 
  * Provides high-performance, non-blocking asynchronous event intake
  * and dynamic options for cached pages (WP Rocket, LiteSpeed, Cloudflare).
@@ -11,22 +11,27 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-class FBPixel_CAPI_REST_API {
+class PixelBeacon_REST_API {
 
     /**
      * REST namespace
      */
-    const REST_NAMESPACE = 'w3-pixel-capi/v1';
+    const REST_NAMESPACE = 'pixelbeacon/v1';
 
     /**
-     * @var FBPixel_CAPI_API_Client
+     * Legacy namespace for cached frontends
+     */
+    const LEGACY_NAMESPACE = 'w3-pixel-capi/v1';
+
+    /**
+     * @var PixelBeacon_API_Client
      */
     private $api_client;
 
     /**
      * Constructor
      *
-     * @param FBPixel_CAPI_API_Client $api_client
+     * @param PixelBeacon_API_Client $api_client
      */
     public function __construct($api_client) {
         $this->api_client = $api_client;
@@ -37,52 +42,56 @@ class FBPixel_CAPI_REST_API {
      * Register REST API routes
      */
     public function register_routes() {
-        // Asynchronous non-blocking event endpoint
-        register_rest_route(
-            self::REST_NAMESPACE,
-            '/event',
-            array(
-                'methods'             => 'POST',
-                'callback'            => array($this, 'handle_event'),
-                'permission_callback' => '__return_true', // Public tracking endpoint
-                'args'                => array(
-                    'event_name' => array(
-                        'required'          => true,
-                        'type'              => 'string',
-                        'sanitize_callback' => 'sanitize_text_field',
-                    ),
-                    'event_id' => array(
-                        'required'          => false,
-                        'type'              => 'string',
-                        'sanitize_callback' => 'sanitize_text_field',
-                    ),
-                    'event_source_url' => array(
-                        'required'          => false,
-                        'type'              => 'string',
-                        'sanitize_callback' => 'esc_url_raw',
-                    ),
-                    'referrer_url' => array(
-                        'required'          => false,
-                        'type'              => 'string',
-                        'sanitize_callback' => 'esc_url_raw',
-                    ),
-                    'custom_data' => array(
-                        'required' => false,
-                    ),
-                )
-            )
-        );
+        $namespaces = array(self::REST_NAMESPACE, self::LEGACY_NAMESPACE);
 
-        // Dynamic options endpoint for cached pages
-        register_rest_route(
-            self::REST_NAMESPACE,
-            '/dynamic-options',
-            array(
-                'methods'             => 'GET',
-                'callback'            => array($this, 'handle_dynamic_options'),
-                'permission_callback' => '__return_true',
-            )
-        );
+        foreach ($namespaces as $ns) {
+            // Asynchronous non-blocking event endpoint
+            register_rest_route(
+                $ns,
+                '/event',
+                array(
+                    'methods'             => 'POST',
+                    'callback'            => array($this, 'handle_event'),
+                    'permission_callback' => '__return_true', // Public tracking endpoint
+                    'args'                => array(
+                        'event_name' => array(
+                            'required'          => true,
+                            'type'              => 'string',
+                            'sanitize_callback' => 'sanitize_text_field',
+                        ),
+                        'event_id' => array(
+                            'required'          => false,
+                            'type'              => 'string',
+                            'sanitize_callback' => 'sanitize_text_field',
+                        ),
+                        'event_source_url' => array(
+                            'required'          => false,
+                            'type'              => 'string',
+                            'sanitize_callback' => 'esc_url_raw',
+                        ),
+                        'referrer_url' => array(
+                            'required'          => false,
+                            'type'              => 'string',
+                            'sanitize_callback' => 'esc_url_raw',
+                        ),
+                        'custom_data' => array(
+                            'required' => false,
+                        ),
+                    )
+                )
+            );
+
+            // Dynamic options endpoint for cached pages
+            register_rest_route(
+                $ns,
+                '/dynamic-options',
+                array(
+                    'methods'             => 'GET',
+                    'callback'            => array($this, 'handle_dynamic_options'),
+                    'permission_callback' => '__return_true',
+                )
+            );
+        }
     }
 
     /**
@@ -99,7 +108,7 @@ class FBPixel_CAPI_REST_API {
 
         $event_name = $request->get_param('event_name');
         if (empty($event_name)) {
-            return new WP_Error('missing_event_name', __('Event name is required', 'w3-pixel-capi'), array('status' => 400));
+            return new WP_Error('missing_event_name', __('Event name is required', 'pixelbeacon'), array('status' => 400));
         }
 
         // Verify event is supported and enabled in plugin settings
@@ -110,10 +119,10 @@ class FBPixel_CAPI_REST_API {
             'FirstOrder', 'ReturningCustomer', 'VipClient'
         );
         if (!in_array($event_name, $allowed_events, true)) {
-            return new WP_Error('invalid_event_name', __('Event is not supported', 'w3-pixel-capi'), array('status' => 400));
+            return new WP_Error('invalid_event_name', __('Event is not supported', 'pixelbeacon'), array('status' => 400));
         }
 
-        $settings = get_option('fbpixel_capi_settings', array());
+        $settings = PixelBeacon_Helpers::get_settings();
         if (isset($settings['enabled_events']) && array_key_exists($event_name, $settings['enabled_events']) && empty($settings['enabled_events'][$event_name])) {
             return new WP_REST_Response(array('success' => true, 'skipped' => 'event_disabled'), 200);
         }
@@ -287,4 +296,9 @@ class FBPixel_CAPI_REST_API {
 
         return new WP_REST_Response($response_data, 200);
     }
+}
+
+// Backward compatibility alias
+if (!class_exists('FBPixel_CAPI_REST_API')) {
+    class_alias('PixelBeacon_REST_API', 'FBPixel_CAPI_REST_API');
 }

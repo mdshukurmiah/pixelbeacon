@@ -1,20 +1,24 @@
-/* W3 Pixel CAPI Admin Styles */
+/* PixelBeacon for WooCommerce Admin Styles */
 
+.pixelbeacon-admin-container,
 .fbpixel-capi-admin-container {
     display: flex;
     gap: 20px;
     margin-top: 20px;
 }
 
+.pixelbeacon-main-content,
 .fbpixel-capi-main-content {
     flex: 2;
 }
 
+.pixelbeacon-sidebar,
 .fbpixel-capi-sidebar {
     flex: 1;
     max-width: 300px;
 }
 
+.pixelbeacon-info-box,
 .fbpixel-capi-info-box {
     background: #fff;
     border: 1px solid #ccd0d4;
@@ -24,6 +28,7 @@
     box-shadow: 0 1px 1px rgba(0,0,0,.04);
 }
 
+.pixelbeacon-info-box h3,
 .fbpixel-capi-info-box h3 {
     margin-top: 0;
     margin-bottom: 10px;
@@ -32,23 +37,28 @@
     color: #23282d;
 }
 
+.pixelbeacon-info-box ol,
+.pixelbeacon-info-box ul,
 .fbpixel-capi-info-box ol,
 .fbpixel-capi-info-box ul {
     margin: 0;
     padding-left: 20px;
 }
 
+.pixelbeacon-info-box li,
 .fbpixel-capi-info-box li {
     margin-bottom: 5px;
     font-size: 13px;
     line-height: 1.4;
 }
 
+.pixelbeacon-info-box a,
 .fbpixel-capi-info-box a {
     color: #0073aa;
     text-decoration: none;
 }
 
+.pixelbeacon-info-box a:hover,
 .fbpixel-capi-info-box a:hover {
     color: #005177;
     text-decoration: underline;
@@ -97,10 +107,12 @@
 
 /* Responsive design */
 @media (max-width: 782px) {
+    .pixelbeacon-admin-container,
     .fbpixel-capi-admin-container {
         flex-direction: column;
     }
     
+    .pixelbeacon-sidebar,
     .fbpixel-capi-sidebar {
         max-width: none;
     }
@@ -121,6 +133,7 @@
 }
 
 /* Status indicators */
+.pixelbeacon-status,
 .fbpixel-capi-status {
     display: inline-block;
     padding: 2px 8px;
@@ -130,17 +143,20 @@
     text-transform: uppercase;
 }
 
+.pixelbeacon-status.active,
 .fbpixel-capi-status.active {
     background-color: #46b450;
     color: #fff;
 }
 
+.pixelbeacon-status.inactive,
 .fbpixel-capi-status.inactive {
     background-color: #dc3232;
     color: #fff;
 }
 
 /* Loading spinner for test connection */
+.pixelbeacon-loading,
 .fbpixel-capi-loading {
     display: inline-block;
     width: 16px;
@@ -156,4 +172,3 @@
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
-

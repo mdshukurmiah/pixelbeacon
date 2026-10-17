@@ -1,6 +1,6 @@
 <?php
 /**
- * W3 Pixel CAPI Event Tracker
+ * PixelBeacon Event Tracker
  * 
  * Handles event tracking, deduplication, and rich customer data collection.
  */
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-class FBPixel_CAPI_Event_Tracker {
+class PixelBeacon_Event_Tracker {
     
     /**
      * API client instance
@@ -40,11 +40,11 @@ class FBPixel_CAPI_Event_Tracker {
     /**
      * Constructor
      * 
-     * @param FBPixel_CAPI_API_Client $api_client API client instance
+     * @param PixelBeacon_API_Client $api_client API client instance
      */
     public function __construct($api_client) {
         $this->api_client = $api_client;
-        $this->settings = get_option('fbpixel_capi_settings', array());
+        $this->settings = PixelBeacon_Helpers::get_settings();
     }
     
     /**
@@ -86,9 +86,9 @@ class FBPixel_CAPI_Event_Tracker {
                 'page_title' => wp_get_document_title(),
                 'post_type'  => $post_type,
                 'post_id'    => get_the_ID() ? (string) get_the_ID() : '',
-                'plugin'     => 'w3-pixel-server-side-tracking',
+                'plugin'     => 'pixelbeacon',
                 'user_role'  => $user_role,
-                'event_url'  => FBPixel_CAPI_Helpers::get_current_url()
+                'event_url'  => PixelBeacon_Helpers::get_current_url()
             ),
             'event_id'         => $event_id
         );
@@ -424,13 +424,16 @@ class FBPixel_CAPI_Event_Tracker {
      * @return string UUIDv4
      */
     public function get_or_create_purchase_event_id($order) {
-        $meta_key = '_w3_purchase_event_id';
+        $meta_key = '_pixelbeacon_purchase_event_id';
         $existing = $order->get_meta($meta_key, true);
+        if (empty($existing)) {
+            $existing = $order->get_meta('_w3_purchase_event_id', true);
+        }
         if (!empty($existing)) {
             return $existing;
         }
 
-        $event_id = FBPixel_CAPI_Helpers::guidv4();
+        $event_id = PixelBeacon_Helpers::guidv4();
         $order->update_meta_data($meta_key, $event_id);
         $order->save();
 
@@ -453,7 +456,7 @@ class FBPixel_CAPI_Event_Tracker {
         }
 
         // Deduplication Gate 1: Check if browser or server already fired purchase
-        $already_fired = $order->get_meta('_w3_purchase_event_fired', true);
+        $already_fired = $order->get_meta('_pixelbeacon_purchase_event_fired', true) || $order->get_meta('_w3_purchase_event_fired', true);
         
         // Synchronized event ID from order meta
         $event_id = $this->get_or_create_purchase_event_id($order);
@@ -465,7 +468,7 @@ class FBPixel_CAPI_Event_Tracker {
 
         // Only fire if not already tracked (prevents duplicates on thank you page reloads)
         if (!$already_fired) {
-            $order->update_meta_data('_w3_purchase_event_fired', '1');
+            $order->update_meta_data('_pixelbeacon_purchase_event_fired', '1');
             $order->save();
 
             // Queue browser event with the exact same event_id
@@ -498,7 +501,7 @@ class FBPixel_CAPI_Event_Tracker {
         }
 
         // Deduplication Gate: If already fired (e.g. by thankyou page), skip!
-        if ($order->get_meta('_w3_purchase_event_fired', true)) {
+        if ($order->get_meta('_pixelbeacon_purchase_event_fired', true) || $order->get_meta('_w3_purchase_event_fired', true)) {
             return;
         }
 
@@ -508,7 +511,7 @@ class FBPixel_CAPI_Event_Tracker {
         }
 
         $event_id = $this->get_or_create_purchase_event_id($order);
-        $order->update_meta_data('_w3_purchase_event_fired', '1');
+        $order->update_meta_data('_pixelbeacon_purchase_event_fired', '1');
         $order->save();
 
         $event_data = $this->build_purchase_event_data($order, $event_id);
@@ -851,10 +854,10 @@ class FBPixel_CAPI_Event_Tracker {
      * Dispatch advanced audience segment events on purchase
      */
     private function maybe_track_customer_segments($order, $orders_count, $ltv) {
-        if ($order->get_meta('_w3_segments_event_fired', true)) {
+        if ($order->get_meta('_pixelbeacon_segments_event_fired', true) || $order->get_meta('_w3_segments_event_fired', true)) {
             return;
         }
-        $order->update_meta_data('_w3_segments_event_fired', '1');
+        $order->update_meta_data('_pixelbeacon_segments_event_fired', '1');
         $order->save();
 
         $user_data = $this->get_user_data_from_order($order);
@@ -1627,4 +1630,9 @@ class FBPixel_CAPI_Event_Tracker {
         // Newly added events default to enabled
         return true;
     }
+}
+
+// Backward compatibility alias
+if (!class_exists('FBPixel_CAPI_Event_Tracker')) {
+    class_alias('PixelBeacon_Event_Tracker', 'FBPixel_CAPI_Event_Tracker');
 }

@@ -1,14 +1,14 @@
 <?php
 /**
- * Plugin Name: W3 Pixel Server-Side Tracking
- * Plugin URI: https://github.com/mdshukurmiah/w3-pixel-capi
- * Description: A WordPress plugin that enables Facebook Pixel server-side tracking using the Conversions API (CAPI) for improved tracking accuracy, deduplication, and high Event Match Quality (EMQ).
+ * Plugin Name: PixelBeacon for WooCommerce
+ * Plugin URI: https://github.com/mdshukurmiah/pixelbeacon
+ * Description: Professional Meta Pixel & Conversions API (CAPI) tracking for WooCommerce with real-time deduplication, Event Match Quality (EMQ), and server-side signals.
  * Version: 1.0.5
  * Author: Md Shukur Miah
  * Author URI: https://www.shukurs.com/
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
- * Text Domain: w3-pixel-capi
+ * Text Domain: pixelbeacon
  * Domain Path: /languages
  * Requires at least: 5.0
  * Tested up to: 6.9.4
@@ -22,15 +22,23 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('FBPIXEL_CAPI_VERSION', '1.0.5');
-define('FBPIXEL_CAPI_PLUGIN_URL', plugin_dir_url(__FILE__));
-define('FBPIXEL_CAPI_PLUGIN_PATH', plugin_dir_path(__FILE__));
-define('FBPIXEL_CAPI_PLUGIN_BASENAME', plugin_basename(__FILE__));
+define('PIXELBEACON_VERSION', '1.0.5');
+define('PIXELBEACON_PLUGIN_URL', plugin_dir_url(__FILE__));
+define('PIXELBEACON_PLUGIN_PATH', plugin_dir_path(__FILE__));
+define('PIXELBEACON_PLUGIN_BASENAME', plugin_basename(__FILE__));
+
+// Legacy compatibility constants
+if (!defined('FBPIXEL_CAPI_VERSION')) {
+    define('FBPIXEL_CAPI_VERSION', PIXELBEACON_VERSION);
+    define('FBPIXEL_CAPI_PLUGIN_URL', PIXELBEACON_PLUGIN_URL);
+    define('FBPIXEL_CAPI_PLUGIN_PATH', PIXELBEACON_PLUGIN_PATH);
+    define('FBPIXEL_CAPI_PLUGIN_BASENAME', PIXELBEACON_PLUGIN_BASENAME);
+}
 
 /**
  * Main plugin class
  */
-class FacebookPixelCAPI {
+class PixelBeacon {
     
     /**
      * Plugin instance
@@ -38,22 +46,22 @@ class FacebookPixelCAPI {
     private static $instance = null;
 
     /**
-     * @var FBPixel_CAPI_API_Client
+     * @var PixelBeacon_API_Client
      */
     private $api_client;
 
     /**
-     * @var FBPixel_CAPI_Event_Tracker
+     * @var PixelBeacon_Event_Tracker
      */
     private $event_tracker;
 
     /**
-     * @var FBPixel_CAPI_REST_API
+     * @var PixelBeacon_REST_API
      */
     private $rest_api;
 
     /**
-     * @var FBPixel_CAPI_Admin
+     * @var PixelBeacon_Admin
      */
     private $admin;
     
@@ -92,14 +100,16 @@ class FacebookPixelCAPI {
 
         // Queue processing cron & daily log cleanup cron
         add_filter('cron_schedules', array($this, 'add_cron_schedules'));
+        add_action('pixelbeacon_process_queue', array($this, 'process_queue'));
         add_action('fbpixel_capi_process_queue', array($this, 'process_queue'));
-        if (!wp_next_scheduled('fbpixel_capi_process_queue')) {
-            wp_schedule_event(time() + 300, 'fbpixel_capi_five_minutes', 'fbpixel_capi_process_queue');
+        if (!wp_next_scheduled('pixelbeacon_process_queue')) {
+            wp_schedule_event(time() + 300, 'pixelbeacon_five_minutes', 'pixelbeacon_process_queue');
         }
 
+        add_action('pixelbeacon_cleanup_logs', array($this, 'cleanup_logs'));
         add_action('fbpixel_capi_cleanup_logs', array($this, 'cleanup_logs'));
-        if (!wp_next_scheduled('fbpixel_capi_cleanup_logs')) {
-            wp_schedule_event(time() + 86400, 'daily', 'fbpixel_capi_cleanup_logs');
+        if (!wp_next_scheduled('pixelbeacon_cleanup_logs')) {
+            wp_schedule_event(time() + 86400, 'daily', 'pixelbeacon_cleanup_logs');
         }
         
         // Initialize WooCommerce hooks after plugins are loaded
@@ -119,7 +129,9 @@ class FacebookPixelCAPI {
         // Frontend scripts for non-blocking asynchronous tracking & form persistence
         add_action('wp_enqueue_scripts', array($this, 'enqueue_frontend_scripts'));
 
-        // AJAX fallback for CAPI event intake if REST API is blocked
+        // AJAX handlers for CAPI event intake (primary + legacy fallback)
+        add_action('wp_ajax_pixelbeacon_event', array($this, 'ajax_event_handler'));
+        add_action('wp_ajax_nopriv_pixelbeacon_event', array($this, 'ajax_event_handler'));
         add_action('wp_ajax_w3_pixel_capi_event', array($this, 'ajax_event_handler'));
         add_action('wp_ajax_nopriv_w3_pixel_capi_event', array($this, 'ajax_event_handler'));
 
@@ -136,11 +148,11 @@ class FacebookPixelCAPI {
      * Include required files
      */
     private function include_files() {
-        require_once FBPIXEL_CAPI_PLUGIN_PATH . 'includes/class-fbpixel-capi-api-client.php';
-        require_once FBPIXEL_CAPI_PLUGIN_PATH . 'includes/class-fbpixel-capi-event-tracker.php';
-        require_once FBPIXEL_CAPI_PLUGIN_PATH . 'includes/class-fbpixel-capi-helpers.php';
-        require_once FBPIXEL_CAPI_PLUGIN_PATH . 'includes/class-fbpixel-capi-rest-api.php';
-        require_once FBPIXEL_CAPI_PLUGIN_PATH . 'admin/class-fbpixel-capi-admin.php';
+        require_once PIXELBEACON_PLUGIN_PATH . 'includes/class-pixelbeacon-api-client.php';
+        require_once PIXELBEACON_PLUGIN_PATH . 'includes/class-pixelbeacon-event-tracker.php';
+        require_once PIXELBEACON_PLUGIN_PATH . 'includes/class-pixelbeacon-helpers.php';
+        require_once PIXELBEACON_PLUGIN_PATH . 'includes/class-pixelbeacon-rest-api.php';
+        require_once PIXELBEACON_PLUGIN_PATH . 'admin/class-pixelbeacon-admin.php';
     }
     
     /**
@@ -148,17 +160,17 @@ class FacebookPixelCAPI {
      */
     public function init_components() {
         // Initialize API client
-        $this->api_client = new FBPixel_CAPI_API_Client();
+        $this->api_client = new PixelBeacon_API_Client();
         
         // Initialize event tracker
-        $this->event_tracker = new FBPixel_CAPI_Event_Tracker($this->api_client);
+        $this->event_tracker = new PixelBeacon_Event_Tracker($this->api_client);
 
         // Initialize REST API for non-blocking CAPI intake and cached pages
-        $this->rest_api = new FBPixel_CAPI_REST_API($this->api_client);
+        $this->rest_api = new PixelBeacon_REST_API($this->api_client);
         
         // Initialize admin (if in admin area)
         if (is_admin()) {
-            $this->admin = new FBPixel_CAPI_Admin();
+            $this->admin = new PixelBeacon_Admin();
         }
 
         // Global hooks for non-WooCommerce events
@@ -180,8 +192,8 @@ class FacebookPixelCAPI {
 
         // Lock Facebook cookies (_fbp, _fbc) into order meta during checkout
         // Critical for payment gateway webhooks (PayPal, Stripe) to retain attribution
-        add_action('woocommerce_checkout_update_order_meta', 'FBPixel_CAPI_Helpers::save_fb_cookies_to_order', 10, 1);
-        add_action('woocommerce_store_api_checkout_update_order_meta', 'FBPixel_CAPI_Helpers::save_fb_cookies_to_order', 10, 1);
+        add_action('woocommerce_checkout_update_order_meta', 'PixelBeacon_Helpers::save_fb_cookies_to_order', 10, 1);
+        add_action('woocommerce_store_api_checkout_update_order_meta', 'PixelBeacon_Helpers::save_fb_cookies_to_order', 10, 1);
 
         // Standard WooCommerce events
         add_action('template_redirect', array($this, 'maybe_track_initiate_checkout'));
@@ -206,7 +218,7 @@ class FacebookPixelCAPI {
      * Load plugin text domain
      */
     public function load_textdomain() {
-        load_plugin_textdomain('w3-pixel-capi', false, dirname(FBPIXEL_CAPI_PLUGIN_BASENAME) . '/languages');
+        load_plugin_textdomain('pixelbeacon', false, dirname(PIXELBEACON_PLUGIN_BASENAME) . '/languages');
     }
 
     /**
@@ -217,32 +229,36 @@ class FacebookPixelCAPI {
             return;
         }
 
-        $settings = get_option('fbpixel_capi_settings', array());
+        $settings = PixelBeacon_Helpers::get_settings();
         if (empty($settings['pixel_id'])) {
             return;
         }
 
-        $version = $this->get_asset_version(FBPIXEL_CAPI_PLUGIN_PATH . 'assets/js/public.js');
+        $version = $this->get_asset_version(PIXELBEACON_PLUGIN_PATH . 'assets/js/public.js');
 
         wp_enqueue_script(
-            'fbpixel-capi-public',
-            FBPIXEL_CAPI_PLUGIN_URL . 'assets/js/public.js',
+            'pixelbeacon-public',
+            PIXELBEACON_PLUGIN_URL . 'assets/js/public.js',
             array('jquery'),
             $version,
             true
         );
 
-        wp_localize_script('fbpixel-capi-public', 'w3PixelOptions', array(
+        $client_options = array(
             'pixelId'             => esc_js($settings['pixel_id']),
             'testEventCode'       => !empty($settings['test_event_code']) ? esc_js($settings['test_event_code']) : '',
-            'restUrl'             => esc_url_raw(rest_url('w3-pixel-capi/v1/event')),
+            'restUrl'             => esc_url_raw(rest_url('pixelbeacon/v1/event')),
             'ajaxUrl'             => esc_url_raw(admin_url('admin-ajax.php')),
-            'dynamicOptionsUrl'   => esc_url_raw(rest_url('w3-pixel-capi/v1/dynamic-options')),
+            'dynamicOptionsUrl'   => esc_url_raw(rest_url('pixelbeacon/v1/dynamic-options')),
             'fetchDynamicOptions' => true,
-            'cookieDomain'        => FBPixel_CAPI_Helpers::get_cookie_domain(),
+            'cookieDomain'        => PixelBeacon_Helpers::get_cookie_domain(),
             'currency'            => function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'USD',
             'debug'               => !empty($settings['debug_mode']),
-        ));
+        );
+
+        // Localize modern object pixelBeaconOptions, and provide fallback alias w3PixelOptions
+        wp_localize_script('pixelbeacon-public', 'pixelBeaconOptions', $client_options);
+        wp_localize_script('pixelbeacon-public', 'w3PixelOptions', $client_options);
     }
 
     /**
@@ -250,20 +266,20 @@ class FacebookPixelCAPI {
      *
      * In development (WP_DEBUG, SCRIPT_DEBUG, or Debug Mode enabled),
      * returns current timestamp time() for instant cache-busting on every refresh.
-     * In live / production, returns FBPIXEL_CAPI_VERSION.
+     * In live / production, returns PIXELBEACON_VERSION.
      *
      * @param string $file_path Optional file path
      * @return string
      */
     public function get_asset_version($file_path = '') {
-        $settings = get_option('fbpixel_capi_settings', array());
+        $settings = PixelBeacon_Helpers::get_settings();
         $is_dev = (defined('SCRIPT_DEBUG') && SCRIPT_DEBUG)
             || (defined('WP_DEBUG') && WP_DEBUG)
             || !empty($settings['debug_mode']);
 
-        $version = $is_dev ? (string) time() : FBPIXEL_CAPI_VERSION;
+        $version = $is_dev ? (string) time() : PIXELBEACON_VERSION;
 
-        return apply_filters('fbpixel_capi_asset_version', $version, $file_path, $is_dev);
+        return apply_filters('pixelbeacon_asset_version', $version, $file_path, $is_dev);
     }
     
     /**
@@ -297,18 +313,26 @@ class FacebookPixelCAPI {
             'enable_ldu'      => false
         );
         
-        add_option('fbpixel_capi_settings', $default_options);
+        $existing = get_option('pixelbeacon_settings');
+        if (empty($existing)) {
+            $legacy = get_option('fbpixel_capi_settings');
+            if (!empty($legacy) && is_array($legacy)) {
+                update_option('pixelbeacon_settings', $legacy);
+            } else {
+                add_option('pixelbeacon_settings', $default_options);
+            }
+        }
         
         $this->create_log_table();
         $this->create_queue_table();
-        update_option('fbpixel_capi_db_version', FBPIXEL_CAPI_VERSION);
+        update_option('pixelbeacon_db_version', PIXELBEACON_VERSION);
 
-        if (!wp_next_scheduled('fbpixel_capi_process_queue')) {
-            wp_schedule_event(time() + 300, 'fbpixel_capi_five_minutes', 'fbpixel_capi_process_queue');
+        if (!wp_next_scheduled('pixelbeacon_process_queue')) {
+            wp_schedule_event(time() + 300, 'pixelbeacon_five_minutes', 'pixelbeacon_process_queue');
         }
 
-        if (!wp_next_scheduled('fbpixel_capi_cleanup_logs')) {
-            wp_schedule_event(time(), 'daily', 'fbpixel_capi_cleanup_logs');
+        if (!wp_next_scheduled('pixelbeacon_cleanup_logs')) {
+            wp_schedule_event(time(), 'daily', 'pixelbeacon_cleanup_logs');
         }
     }
     
@@ -316,6 +340,8 @@ class FacebookPixelCAPI {
      * Plugin deactivation
      */
     public function deactivate() {
+        wp_clear_scheduled_hook('pixelbeacon_cleanup_logs');
+        wp_clear_scheduled_hook('pixelbeacon_process_queue');
         wp_clear_scheduled_hook('fbpixel_capi_cleanup_logs');
         wp_clear_scheduled_hook('fbpixel_capi_process_queue');
     }
@@ -325,7 +351,7 @@ class FacebookPixelCAPI {
      */
     private function create_log_table() {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'fbpixel_capi_logs';
+        $table_name = $wpdb->prefix . 'pixelbeacon_logs';
         $charset_collate = $wpdb->get_charset_collate();
         
         $sql = "CREATE TABLE $table_name (
@@ -349,7 +375,7 @@ class FacebookPixelCAPI {
      */
     private function create_queue_table() {
         global $wpdb;
-        $table_name = $wpdb->prefix . 'fbpixel_capi_queue';
+        $table_name = $wpdb->prefix . 'pixelbeacon_queue';
         $charset_collate = $wpdb->get_charset_collate();
 
         $sql = "CREATE TABLE $table_name (
@@ -371,11 +397,11 @@ class FacebookPixelCAPI {
      * Run table upgrades if version changed
      */
     public function maybe_update_db() {
-        $installed_ver = get_option('fbpixel_capi_db_version', '0');
-        if (version_compare($installed_ver, FBPIXEL_CAPI_VERSION, '<')) {
+        $installed_ver = get_option('pixelbeacon_db_version', get_option('fbpixel_capi_db_version', '0'));
+        if (version_compare($installed_ver, PIXELBEACON_VERSION, '<')) {
             $this->create_log_table();
             $this->create_queue_table();
-            update_option('fbpixel_capi_db_version', FBPIXEL_CAPI_VERSION);
+            update_option('pixelbeacon_db_version', PIXELBEACON_VERSION);
         }
     }
     
@@ -384,10 +410,10 @@ class FacebookPixelCAPI {
      */
     public function add_admin_menu() {
         add_options_page(
-            __('Facebook Pixel CAPI Settings', 'w3-pixel-capi'),
-            __('Facebook Pixel CAPI', 'w3-pixel-capi'),
+            __('PixelBeacon Settings', 'pixelbeacon'),
+            __('PixelBeacon', 'pixelbeacon'),
             'manage_options',
-            'fbpixel-capi-settings',
+            'pixelbeacon-settings',
             array($this, 'admin_page_callback')
         );
     }
@@ -414,23 +440,23 @@ class FacebookPixelCAPI {
      * Enqueue admin scripts and styles
      */
     public function admin_enqueue_scripts($hook) {
-        if ('settings_page_fbpixel-capi-settings' !== $hook) {
+        if ('settings_page_pixelbeacon-settings' !== $hook && 'settings_page_fbpixel-capi-settings' !== $hook) {
             return;
         }
         
-        $css_ver = $this->get_asset_version(FBPIXEL_CAPI_PLUGIN_PATH . 'assets/css/admin.css');
-        $js_ver  = $this->get_asset_version(FBPIXEL_CAPI_PLUGIN_PATH . 'assets/js/admin.js');
+        $css_ver = $this->get_asset_version(PIXELBEACON_PLUGIN_PATH . 'assets/css/admin.css');
+        $js_ver  = $this->get_asset_version(PIXELBEACON_PLUGIN_PATH . 'assets/js/admin.js');
 
         wp_enqueue_style(
-            'fbpixel-capi-admin',
-            FBPIXEL_CAPI_PLUGIN_URL . 'assets/css/admin.css',
+            'pixelbeacon-admin',
+            PIXELBEACON_PLUGIN_URL . 'assets/css/admin.css',
             array(),
             $css_ver
         );
         
         wp_enqueue_script(
-            'fbpixel-capi-admin',
-            FBPIXEL_CAPI_PLUGIN_URL . 'assets/js/admin.js',
+            'pixelbeacon-admin',
+            PIXELBEACON_PLUGIN_URL . 'assets/js/admin.js',
             array('jquery'),
             $js_ver,
             true
@@ -450,9 +476,9 @@ class FacebookPixelCAPI {
      * Ensure Facebook cookies exist
      */
     public function ensure_facebook_cookies() {
-        FBPixel_CAPI_Helpers::ensure_fbp();
-        FBPixel_CAPI_Helpers::ensure_fbc();
-        FBPixel_CAPI_Helpers::ensure_pbid();
+        PixelBeacon_Helpers::ensure_fbp();
+        PixelBeacon_Helpers::ensure_fbc();
+        PixelBeacon_Helpers::ensure_pbid();
     }
 
     /**
@@ -462,11 +488,14 @@ class FacebookPixelCAPI {
      * @return array
      */
     public function add_cron_schedules($schedules) {
-        if (!isset($schedules['fbpixel_capi_five_minutes'])) {
-            $schedules['fbpixel_capi_five_minutes'] = array(
+        if (!isset($schedules['pixelbeacon_five_minutes'])) {
+            $schedules['pixelbeacon_five_minutes'] = array(
                 'interval' => 300,
-                'display'  => __('Every 5 Minutes', 'w3-pixel-capi')
+                'display'  => __('Every 5 Minutes', 'pixelbeacon')
             );
+        }
+        if (!isset($schedules['fbpixel_capi_five_minutes'])) {
+            $schedules['fbpixel_capi_five_minutes'] = $schedules['pixelbeacon_five_minutes'];
         }
         return $schedules;
     }
@@ -493,7 +522,7 @@ class FacebookPixelCAPI {
      * AJAX fallback handler for client-side events if REST API is firewalled
      */
     public function ajax_event_handler() {
-        if (FBPixel_CAPI_Helpers::is_bot_request()) {
+        if (PixelBeacon_Helpers::is_bot_request()) {
             wp_send_json_success(array('skipped' => 'bot'));
         }
 
@@ -502,7 +531,7 @@ class FacebookPixelCAPI {
             wp_send_json_error(array('message' => 'Missing event name'), 400);
         }
 
-        $settings = get_option('fbpixel_capi_settings', array());
+        $settings = PixelBeacon_Helpers::get_settings();
         $allowed_events = array(
             'PageView', 'AddToCart', 'InitiateCheckout', 'Purchase', 'ViewContent',
             'ViewCategory', 'RemoveFromCart', 'AddPaymentInfo', 'AddToWishlist',
@@ -517,7 +546,7 @@ class FacebookPixelCAPI {
             wp_send_json_success(array('skipped' => 'event_disabled'));
         }
 
-        $event_id = isset($_POST['event_id']) ? sanitize_text_field(wp_unslash($_POST['event_id'])) : FBPixel_CAPI_Helpers::guidv4();
+        $event_id = isset($_POST['event_id']) ? sanitize_text_field(wp_unslash($_POST['event_id'])) : PixelBeacon_Helpers::guidv4();
         
         $raw_custom = isset($_POST['custom_data']) ? wp_unslash($_POST['custom_data']) : array();
         $custom_data = is_array($raw_custom) ? $raw_custom : json_decode($raw_custom, true);
@@ -525,13 +554,13 @@ class FacebookPixelCAPI {
             $custom_data = array();
         }
 
-        $event_source_url = isset($_POST['event_source_url']) ? esc_url_raw(wp_unslash($_POST['event_source_url'])) : FBPixel_CAPI_Helpers::get_current_url();
+        $event_source_url = isset($_POST['event_source_url']) ? esc_url_raw(wp_unslash($_POST['event_source_url'])) : PixelBeacon_Helpers::get_current_url();
         $referrer_url = isset($_POST['referrer_url']) ? esc_url_raw(wp_unslash($_POST['referrer_url'])) : '';
 
         // Build enriched user data using event tracker
         $user_data = isset($this->event_tracker) ? $this->event_tracker->get_user_data() : array(
-            'client_ip_address' => FBPixel_CAPI_Helpers::get_client_ip(),
-            'client_user_agent' => FBPixel_CAPI_Helpers::get_user_agent(),
+            'client_ip_address' => PixelBeacon_Helpers::get_client_ip(),
+            'client_user_agent' => PixelBeacon_Helpers::get_user_agent(),
         );
 
         $event_data = array(
@@ -731,11 +760,11 @@ class FacebookPixelCAPI {
      * Output Facebook Pixel base code with Advanced Matching for browser tracking
      */
     public function output_pixel_base_code() {
-        if (is_admin() || FBPixel_CAPI_Helpers::is_bot_request()) {
+        if (is_admin() || PixelBeacon_Helpers::is_bot_request()) {
             return;
         }
 
-        $settings = get_option('fbpixel_capi_settings', array());
+        $settings = PixelBeacon_Helpers::get_settings();
         if (empty($settings['pixel_id'])) {
             return;
         }
@@ -748,34 +777,34 @@ class FacebookPixelCAPI {
         if (is_user_logged_in()) {
             $user = wp_get_current_user();
             if (!empty($user->user_email)) {
-                $advanced_matching['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->user_email);
+                $advanced_matching['em'] = PixelBeacon_Helpers::normalize_and_hash($user->user_email);
             }
             if (!empty($user->first_name)) {
-                $advanced_matching['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->first_name);
+                $advanced_matching['fn'] = PixelBeacon_Helpers::normalize_and_hash($user->first_name);
             }
             if (!empty($user->last_name)) {
-                $advanced_matching['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->last_name);
+                $advanced_matching['ln'] = PixelBeacon_Helpers::normalize_and_hash($user->last_name);
             }
-            $advanced_matching['external_id'] = FBPixel_CAPI_Helpers::normalize_and_hash((string) $user->ID);
+            $advanced_matching['external_id'] = PixelBeacon_Helpers::normalize_and_hash((string) $user->ID);
         } else {
-            $persisted = FBPixel_CAPI_Helpers::get_persistence_user_data();
+            $persisted = PixelBeacon_Helpers::get_persistence_user_data();
             if (!empty($persisted['em'])) {
-                $advanced_matching['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['em']);
+                $advanced_matching['em'] = PixelBeacon_Helpers::normalize_and_hash($persisted['em']);
             }
             if (!empty($persisted['fn'])) {
-                $advanced_matching['fn'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['fn']);
+                $advanced_matching['fn'] = PixelBeacon_Helpers::normalize_and_hash($persisted['fn']);
             }
             if (!empty($persisted['ln'])) {
-                $advanced_matching['ln'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['ln']);
+                $advanced_matching['ln'] = PixelBeacon_Helpers::normalize_and_hash($persisted['ln']);
             }
             if (!empty($persisted['ph'])) {
-                $advanced_matching['ph'] = FBPixel_CAPI_Helpers::normalize_and_hash_phone($persisted['ph']);
+                $advanced_matching['ph'] = PixelBeacon_Helpers::normalize_and_hash_phone($persisted['ph']);
             }
-            $advanced_matching['external_id'] = FBPixel_CAPI_Helpers::get_pbid();
+            $advanced_matching['external_id'] = PixelBeacon_Helpers::get_pbid();
         }
         $advanced_matching = array_filter($advanced_matching);
         ?>
-        <!-- Facebook Pixel Base Code (W3 Pixel CAPI) -->
+        <!-- Facebook Pixel Base Code (PixelBeacon for WooCommerce) -->
         <script>
         !function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
         n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
@@ -802,11 +831,11 @@ class FacebookPixelCAPI {
      * Output browser-side events with matching parameters and event IDs
      */
     public function output_browser_events() {
-        if (is_admin() || FBPixel_CAPI_Helpers::is_bot_request() || !isset($this->event_tracker)) {
+        if (is_admin() || PixelBeacon_Helpers::is_bot_request() || !isset($this->event_tracker)) {
             return;
         }
 
-        $settings = get_option('fbpixel_capi_settings', array());
+        $settings = PixelBeacon_Helpers::get_settings();
         if (empty($settings['pixel_id'])) {
             return;
         }
@@ -819,7 +848,7 @@ class FacebookPixelCAPI {
         $test_event_code = !empty($settings['test_event_code']) ? esc_js($settings['test_event_code']) : '';
         $events_json = wp_json_encode($events);
         ?>
-        <!-- Facebook Pixel Events (W3 Pixel CAPI) -->
+        <!-- Facebook Pixel Events (PixelBeacon for WooCommerce) -->
         <script>
         (function () {
             var rawEvents = <?php echo $events_json; ?> || [];
@@ -850,6 +879,7 @@ class FacebookPixelCAPI {
                 }
             }
 
+            window.pixelBeaconEvents = (window.pixelBeaconEvents || []).concat(rawEvents);
             window.w3PixelEvents = (window.w3PixelEvents || []).concat(rawEvents);
         })();
         </script>
@@ -858,5 +888,15 @@ class FacebookPixelCAPI {
     }
 }
 
+// Function and class prefix: pixelBeacon
+function pixelBeacon() {
+    return PixelBeacon::get_instance();
+}
+
+// Backwards compatibility alias for class
+if (!class_exists('FacebookPixelCAPI')) {
+    class_alias('PixelBeacon', 'FacebookPixelCAPI');
+}
+
 // Initialize the plugin
-FacebookPixelCAPI::get_instance();
+pixelBeacon();

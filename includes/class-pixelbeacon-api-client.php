@@ -1,6 +1,6 @@
 <?php
 /**
- * W3 Pixel CAPI API Client
+ * PixelBeacon API Client
  * 
  * Handles communication with Facebook Conversions API
  */
@@ -10,7 +10,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-class FBPixel_CAPI_API_Client {
+class PixelBeacon_API_Client {
     
     /**
      * Facebook Graph API base URL
@@ -31,7 +31,7 @@ class FBPixel_CAPI_API_Client {
      * Constructor
      */
     public function __construct() {
-        $this->settings = get_option('fbpixel_capi_settings', array());
+        $this->settings = PixelBeacon_Helpers::get_settings();
     }
     
     /**
@@ -45,7 +45,7 @@ class FBPixel_CAPI_API_Client {
     public function send_events($events, $allow_queue = true, $blocking = true) {
         // Validate settings
         if (empty($this->settings['pixel_id']) || empty($this->settings['access_token'])) {
-            return new WP_Error('missing_credentials', __('Pixel ID or Access Token is missing', 'w3-pixel-capi'));
+            return new WP_Error('missing_credentials', __('Pixel ID or Access Token is missing', 'pixelbeacon'));
         }
         
         // Prepare API endpoint
@@ -59,7 +59,7 @@ class FBPixel_CAPI_API_Client {
         // Prepare request body
         $body = array(
             'data'          => $events,
-            'partner_agent' => 'w3pixelcapi'
+            'partner_agent' => 'pixelbeacon'
         );
         
         // Limited Data Use (LDU) for California Consumer Privacy Act (CCPA) compliance
@@ -176,8 +176,8 @@ class FBPixel_CAPI_API_Client {
             array('%s', '%d', '%s', '%s', '%s')
         );
 
-        if (!wp_next_scheduled('fbpixel_capi_process_queue')) {
-            wp_schedule_single_event(time() + 300, 'fbpixel_capi_process_queue');
+        if (!wp_next_scheduled('pixelbeacon_process_queue')) {
+            wp_schedule_single_event(time() + 300, 'pixelbeacon_process_queue');
         }
     }
 
@@ -261,7 +261,7 @@ class FBPixel_CAPI_API_Client {
             return $decoded['error']['error_user_msg'];
         }
         
-        return __('Unknown API error occurred', 'w3-pixel-capi');
+        return __('Unknown API error occurred', 'pixelbeacon');
     }
     
     /**
@@ -353,7 +353,7 @@ class FBPixel_CAPI_API_Client {
      */
     private function get_queue_table_name() {
         global $wpdb;
-        return $wpdb->prefix . 'fbpixel_capi_queue';
+        return $wpdb->prefix . 'pixelbeacon_queue';
     }
 
     /**
@@ -363,7 +363,7 @@ class FBPixel_CAPI_API_Client {
      */
     private function get_log_table_name() {
         global $wpdb;
-        return $wpdb->prefix . 'fbpixel_capi_logs';
+        return $wpdb->prefix . 'pixelbeacon_logs';
     }
     /**
      * Test API connection with a test event
@@ -375,7 +375,7 @@ class FBPixel_CAPI_API_Client {
         $access_token = !empty($access_token) ? trim($access_token) : (!empty($this->settings['access_token']) ? $this->settings['access_token'] : '');
 
         if (empty($pixel_id) || empty($access_token)) {
-            return new WP_Error('missing_credentials', __('Pixel ID or Access Token is missing', 'w3-pixel-capi'));
+            return new WP_Error('missing_credentials', __('Pixel ID or Access Token is missing', 'pixelbeacon'));
         }
 
         $orig_settings = $this->settings;
@@ -388,13 +388,13 @@ class FBPixel_CAPI_API_Client {
             'action_source'    => 'website',
             'event_source_url' => home_url('/'),
             'user_data'        => array(
-                'client_ip_address' => FBPixel_CAPI_Helpers::get_client_ip(),
-                'client_user_agent' => FBPixel_CAPI_Helpers::get_user_agent(),
+                'client_ip_address' => PixelBeacon_Helpers::get_client_ip(),
+                'client_user_agent' => PixelBeacon_Helpers::get_user_agent(),
             ),
             'custom_data'      => array(
                 'test_connection' => true
             ),
-            'event_id'         => FBPixel_CAPI_Helpers::guidv4()
+            'event_id'         => PixelBeacon_Helpers::guidv4()
         );
 
         $result = $this->send_events(array($test_event), false, true);
@@ -447,4 +447,9 @@ class FBPixel_CAPI_API_Client {
         );
     }
 
+}
+
+// Backward compatibility alias
+if (!class_exists('FBPixel_CAPI_API_Client')) {
+    class_alias('PixelBeacon_API_Client', 'FBPixel_CAPI_API_Client');
 }

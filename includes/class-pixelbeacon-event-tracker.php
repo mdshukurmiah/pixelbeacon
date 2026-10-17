@@ -1541,8 +1541,8 @@ class PixelBeacon_Event_Tracker {
      * @return string Event ID
      */
     private function generate_event_id($event_name, $additional_data = '') {
-        $event_id = FBPixel_CAPI_Helpers::guidv4();
-        return apply_filters('fbpixel_capi_event_id', $event_id, $event_name, $additional_data);
+        $event_id = PixelBeacon_Helpers::guidv4();
+        return apply_filters('pixelbeacon_event_id', $event_id, $event_name, $additional_data);
     }
     
     /**

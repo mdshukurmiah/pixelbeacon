@@ -14,7 +14,59 @@ if (!defined('ABSPATH')) {
 class PixelBeacon_Helpers {
     
     /**
-     * Get plugin settings with automatic backward compatibility migration
+     * Get default plugin settings
+     *
+     * @return array
+     */
+    public static function get_default_settings() {
+        return array(
+            'pixel_id'        => '',
+            'access_token'    => '',
+            'test_event_code' => '',
+            'enabled_events'  => array(
+                'PageView'             => true,
+                'AddToCart'            => true,
+                'InitiateCheckout'     => true,
+                'Purchase'             => true,
+                'ViewContent'          => true,
+                'ViewCategory'         => true,
+                'RemoveFromCart'       => true,
+                'AddPaymentInfo'       => true,
+                'AddToWishlist'        => true,
+                'Search'               => true,
+                'Lead'                 => true,
+                'Contact'              => true,
+                'CompleteRegistration' => true,
+                'CustomizeProduct'     => true,
+                'FirstOrder'           => true,
+                'ReturningCustomer'    => true,
+                'VipClient'            => true,
+            ),
+            'debug_mode'      => false,
+            'enable_ldu'      => false,
+
+            // TikTok settings
+            'tiktok_enabled'         => false,
+            'tiktok_pixel_id'        => '',
+            'tiktok_access_token'    => '',
+            'tiktok_test_event_code' => '',
+            'tiktok_enabled_events'  => array(
+                'PageView'             => true,
+                'ViewContent'          => true,
+                'AddToCart'            => true,
+                'InitiateCheckout'     => true,
+                'AddPaymentInfo'       => true,
+                'CompletePayment'      => true,
+                'Search'               => true,
+                'AddToWishlist'        => true,
+                'CompleteRegistration' => true,
+                'Contact'              => true,
+            ),
+        );
+    }
+
+    /**
+     * Get plugin settings with automatic backward compatibility migration and defaults merge
      *
      * @return array
      */
@@ -29,7 +81,20 @@ class PixelBeacon_Helpers {
                 $settings = array();
             }
         }
-        return is_array($settings) ? $settings : array();
+        $defaults = self::get_default_settings();
+        if (!is_array($settings)) {
+            return $defaults;
+        }
+
+        $merged = wp_parse_args($settings, $defaults);
+        if (isset($settings['enabled_events']) && is_array($settings['enabled_events'])) {
+            $merged['enabled_events'] = wp_parse_args($settings['enabled_events'], $defaults['enabled_events']);
+        }
+        if (isset($settings['tiktok_enabled_events']) && is_array($settings['tiktok_enabled_events'])) {
+            $merged['tiktok_enabled_events'] = wp_parse_args($settings['tiktok_enabled_events'], $defaults['tiktok_enabled_events']);
+        }
+
+        return $merged;
     }
     
     /**
@@ -228,8 +293,17 @@ class PixelBeacon_Helpers {
         if ($digits === '') {
             return null;
         }
-        // Meta requirement: Strip leading zeros and include country code if possible
-        $digits = ltrim($digits, '0');
+        // Meta & TikTok EMQ standard: E.164 with international country code, digits only
+        // Bangladesh format detection: 11 digits starting with 01 (e.g. 01712345678 -> 8801712345678)
+        if (strlen($digits) === 11 && strpos($digits, '01') === 0) {
+            $digits = '880' . substr($digits, 1);
+        } elseif (strlen($digits) === 10 && strpos($digits, '1') === 0) {
+            $digits = '880' . $digits;
+        } elseif (strlen($digits) === 13 && strpos($digits, '8801') === 0) {
+            // Already standard 8801...
+        } else {
+            $digits = ltrim($digits, '0');
+        }
         if ($digits === '') {
             return null;
         }
@@ -369,6 +443,26 @@ class PixelBeacon_Helpers {
      */
     public static function validate_access_token($access_token) {
         return strlen($access_token) > 50 && preg_match('/^[a-zA-Z0-9_-]+$/', $access_token);
+    }
+
+    /**
+     * Validate TikTok Pixel ID format
+     *
+     * @param string $pixel_id TikTok Pixel ID (typically 20 alphanumeric characters)
+     * @return bool Whether TikTok Pixel ID is valid
+     */
+    public static function validate_tiktok_pixel_id($pixel_id) {
+        return (bool) preg_match('/^[a-zA-Z0-9]{10,35}$/', $pixel_id);
+    }
+
+    /**
+     * Validate TikTok access token format
+     *
+     * @param string $access_token
+     * @return bool Whether TikTok access token is valid
+     */
+    public static function validate_tiktok_access_token($access_token) {
+        return strlen($access_token) >= 20 && preg_match('/^[a-zA-Z0-9_-]+$/', $access_token);
     }
 
     /**
@@ -635,6 +729,70 @@ class PixelBeacon_Helpers {
             'ip'         => $ip
         );
     }
+
+    /**
+     * Lock TikTok cookies into WooCommerce order meta during checkout
+     * Ensures payment gateway webhooks (PayPal, Stripe, bKash, Nagad) retain TikTok attribution
+     *
+     * @param int|WC_Order $order_param
+     */
+    public static function save_tiktok_cookies_to_order($order_param) {
+        $order = ($order_param instanceof \WC_Order) ? $order_param : (function_exists('wc_get_order') ? wc_get_order($order_param) : null);
+        if (!$order) {
+            return;
+        }
+
+        $data = array(
+            'ttp'        => self::ensure_ttp(),
+            'ttclid'     => self::ensure_ttclid(),
+            'user_agent' => self::get_user_agent(),
+            'ip'         => self::get_client_ip(),
+        );
+
+        $order->update_meta_data('_pixelbeacon_tiktok_cookie', $data);
+        $order->save();
+    }
+
+    /**
+     * Retrieve TikTok cookies locked in WooCommerce order meta
+     *
+     * @param WC_Order $order
+     * @return array Array with ttp, ttclid, user_agent, and ip keys
+     */
+    public static function get_tiktok_cookies_from_order($order) {
+        $ttp    = '';
+        $ttclid = '';
+        $saved  = array();
+
+        if ($order && is_a($order, 'WC_Order')) {
+            $saved = $order->get_meta('_pixelbeacon_tiktok_cookie', true);
+            if (!empty($saved) && is_array($saved)) {
+                if (!empty($saved['ttp'])) {
+                    $ttp = $saved['ttp'];
+                }
+                if (!empty($saved['ttclid'])) {
+                    $ttclid = $saved['ttclid'];
+                }
+            }
+        }
+
+        if (empty($ttp)) {
+            $ttp = self::get_tiktok_browser_id();
+        }
+        if (empty($ttclid)) {
+            $ttclid = self::get_tiktok_click_id();
+        }
+
+        $user_agent = !empty($saved['user_agent']) ? $saved['user_agent'] : self::get_user_agent();
+        $ip         = !empty($saved['ip']) ? $saved['ip'] : self::get_client_ip();
+
+        return array(
+            'ttp'        => $ttp,
+            'ttclid'     => $ttclid,
+            'user_agent' => $user_agent,
+            'ip'         => $ip,
+        );
+    }
     
     /**
      * Check if WooCommerce is active
@@ -800,6 +958,67 @@ class PixelBeacon_Helpers {
             $fbc = 'fb.1.' . time() . '.' . $fbclid;
             self::set_cookie('_fbc', $fbc, 90); // 90 days
             return $fbc;
+        }
+
+        return null;
+    }
+
+    /**
+     * Get TikTok first-party browser ID (_ttp)
+     *
+     * @return string|null
+     */
+    public static function get_tiktok_browser_id() {
+        if (!empty($_COOKIE['_ttp'])) {
+            return sanitize_text_field(wp_unslash($_COOKIE['_ttp']));
+        }
+        return null;
+    }
+
+    /**
+     * Ensure TikTok first-party cookie _ttp exists
+     *
+     * @return string
+     */
+    public static function ensure_ttp() {
+        if (!empty($_COOKIE['_ttp'])) {
+            return sanitize_text_field(wp_unslash($_COOKIE['_ttp']));
+        }
+
+        // Generate RFC 4122 UUIDv4 for _ttp
+        $ttp = self::guidv4();
+        self::set_cookie('_ttp', $ttp, 390); // ~13 months
+        return $ttp;
+    }
+
+    /**
+     * Get TikTok Click ID (ttclid)
+     *
+     * @return string|null
+     */
+    public static function get_tiktok_click_id() {
+        if (!empty($_COOKIE['ttclid'])) {
+            return sanitize_text_field(wp_unslash($_COOKIE['ttclid']));
+        }
+        return null;
+    }
+
+    /**
+     * Ensure TikTok Click ID (ttclid) is captured from URL and persisted to cookie
+     *
+     * @return string|null
+     */
+    public static function ensure_ttclid() {
+        if (!empty($_COOKIE['ttclid'])) {
+            return sanitize_text_field(wp_unslash($_COOKIE['ttclid']));
+        }
+
+        // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Reading public TikTok ad click ID from URL query string.
+        if (!empty($_GET['ttclid'])) {
+            // phpcs:ignore WordPress.Security.NonceVerification.Recommended -- Reading public TikTok ad click ID from URL query string.
+            $ttclid = sanitize_text_field(wp_unslash($_GET['ttclid']));
+            self::set_cookie('ttclid', $ttclid, 90);
+            return $ttclid;
         }
 
         return null;

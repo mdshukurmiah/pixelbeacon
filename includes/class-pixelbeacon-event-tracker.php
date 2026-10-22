@@ -409,11 +409,15 @@ class PixelBeacon_Event_Tracker {
      */
     public function add_cart_fragment_event($fragments) {
         if (!empty($this->last_ajax_event)) {
-            $fragments['w3_fbpixel_event'] = array(
-                'event_name'  => $this->last_ajax_event['event_name'],
-                'event_id'    => $this->last_ajax_event['event_id'],
-                'custom_data' => $this->last_ajax_event['custom_data']
+            $event_payload = array(
+                'event_name'        => $this->last_ajax_event['event_name'],
+                'event_id'          => $this->last_ajax_event['event_id'],
+                'custom_data'       => $this->last_ajax_event['custom_data'],
+                'tiktok_event_name' => $this->map_to_tiktok_event_name($this->last_ajax_event['event_name']),
+                'tiktok_properties' => $this->build_tiktok_properties($this->last_ajax_event['event_name'], $this->last_ajax_event['custom_data']),
             );
+            $fragments['pixelbeacon_event'] = $event_payload;
+            $fragments['w3_fbpixel_event']   = $event_payload;
         }
         return $fragments;
     }
@@ -474,7 +478,7 @@ class PixelBeacon_Event_Tracker {
 
             // Queue browser event with the exact same event_id
             $this->queue_browser_event($event_data, false, false);
-            $this->send_event($event_data);
+            $this->send_event($event_data, $order);
 
             // Optional Segment Triggers: FirstOrder, ReturningCustomer, VipClient
             $this->maybe_track_customer_segments($order, $orders_count, $ltv);
@@ -522,7 +526,7 @@ class PixelBeacon_Event_Tracker {
         $ltv          = isset($event_data['_ltv']) ? (float) $event_data['_ltv'] : (float) $order->get_total();
         unset($event_data['_orders_count'], $event_data['_ltv']);
 
-        $this->send_event($event_data);
+        $this->send_event($event_data, $order);
 
         // Optional Segment Triggers: FirstOrder, ReturningCustomer, VipClient
         $this->maybe_track_customer_segments($order, $orders_count, $ltv);
@@ -1244,19 +1248,39 @@ class PixelBeacon_Event_Tracker {
     }
     
     /**
-     * Send event to Facebook Conversions API
+     * Send event to Facebook Conversions API and TikTok Events API
      * 
      * @param array $event_data Event data
+     * @param WC_Order|null $order Optional order object
      * @return array|WP_Error Response or error
      */
-    public function send_event($event_data) {
-        $result = $this->api_client->send_event($event_data);
-        
-        if (!empty($this->settings['debug_mode'])) {
-            if (is_wp_error($result)) {
-                PixelBeacon_Helpers::log('Pixel Error: ' . $result->get_error_message(), 'error');
-            } else {
-                PixelBeacon_Helpers::log('Pixel Success: Event ' . $event_data['event_name'] . ' sent', 'info');
+    public function send_event($event_data, $order = null) {
+        $result = null;
+
+        // 1. Dispatch to Facebook Conversions API if configured
+        if (!empty($this->settings['pixel_id']) && !empty($this->settings['access_token'])) {
+            $result = $this->api_client->send_event($event_data);
+            if (!empty($this->settings['debug_mode'])) {
+                if (is_wp_error($result)) {
+                    PixelBeacon_Helpers::log('Facebook CAPI Error: ' . $result->get_error_message(), 'error');
+                } else {
+                    PixelBeacon_Helpers::log('Facebook CAPI Success: Event ' . $event_data['event_name'] . ' sent', 'info');
+                }
+            }
+        }
+
+        // 2. Dispatch to TikTok Events API if enabled and configured
+        if (!empty($this->settings['tiktok_enabled']) && !empty($this->settings['tiktok_pixel_id']) && !empty($this->settings['tiktok_access_token'])) {
+            $tiktok_event = $this->build_tiktok_event_payload($event_data, $order);
+            if ($tiktok_event && $this->is_tiktok_event_enabled($tiktok_event['event'])) {
+                $tt_result = $this->api_client->send_tiktok_event($tiktok_event);
+                if (!empty($this->settings['debug_mode'])) {
+                    if (is_wp_error($tt_result)) {
+                        PixelBeacon_Helpers::log('TikTok CAPI Error: ' . $tt_result->get_error_message(), 'error');
+                    } else {
+                        PixelBeacon_Helpers::log('TikTok CAPI Success: Event ' . $tiktok_event['event'] . ' sent', 'info');
+                    }
+                }
             }
         }
         
@@ -1264,7 +1288,7 @@ class PixelBeacon_Event_Tracker {
     }
 
     /**
-     * Queue browser-side event for Pixel tracking
+     * Queue browser-side event for Facebook Pixel and TikTok Pixel tracking
      *
      * @param array $event_data
      * @param bool $store_in_session
@@ -1275,27 +1299,275 @@ class PixelBeacon_Event_Tracker {
             return;
         }
 
+        $custom_data = isset($event_data['custom_data']) ? $event_data['custom_data'] : array();
+
         $browser_event = array(
-            'event_name'   => $event_data['event_name'],
-            'event_id'     => isset($event_data['event_id']) ? $event_data['event_id'] : '',
-            'custom_data'  => isset($event_data['custom_data']) ? $event_data['custom_data'] : array(),
-            'send_to_capi' => $send_to_capi
+            'event_name'        => $event_data['event_name'],
+            'event_id'          => isset($event_data['event_id']) ? $event_data['event_id'] : '',
+            'custom_data'       => $custom_data,
+            'tiktok_event_name' => $this->map_to_tiktok_event_name($event_data['event_name']),
+            'tiktok_properties' => $this->build_tiktok_properties($event_data['event_name'], $custom_data),
+            'send_to_capi'      => $send_to_capi,
         );
 
         if ($store_in_session && class_exists('WooCommerce') && function_exists('WC')) {
             $session = WC()->session;
             if ($session) {
-                $existing = $session->get('fbpixel_capi_browser_events', array());
+                $existing = $session->get('pixelbeacon_browser_events', $session->get('fbpixel_capi_browser_events', array()));
                 if (!is_array($existing)) {
                     $existing = array();
                 }
                 $existing[] = $browser_event;
+                $session->set('pixelbeacon_browser_events', $existing);
                 $session->set('fbpixel_capi_browser_events', $existing);
                 return;
             }
         }
 
         $this->browser_events[] = $browser_event;
+    }
+
+    /**
+     * Map standard PixelBeacon event name to TikTok standard event name
+     *
+     * @param string $event_name
+     * @return string|null
+     */
+    public function map_to_tiktok_event_name($event_name) {
+        $map = array(
+            'PageView'             => 'PageView',
+            'ViewContent'          => 'ViewContent',
+            'ViewCategory'         => 'ViewContent',
+            'AddToCart'            => 'AddToCart',
+            'InitiateCheckout'     => 'InitiateCheckout',
+            'AddPaymentInfo'       => 'AddPaymentInfo',
+            'Purchase'             => 'CompletePayment',
+            'Search'               => 'Search',
+            'AddToWishlist'        => 'AddToWishlist',
+            'CompleteRegistration' => 'CompleteRegistration',
+            'Lead'                 => 'Contact',
+            'Contact'              => 'Contact',
+            'CustomizeProduct'     => 'ViewContent',
+        );
+
+        return isset($map[$event_name]) ? $map[$event_name] : null;
+    }
+
+    /**
+     * Check if a specific TikTok event is enabled in settings
+     *
+     * @param string $tiktok_event_name
+     * @return bool
+     */
+    public function is_tiktok_event_enabled($tiktok_event_name) {
+        if (empty($this->settings['tiktok_enabled'])) {
+            return false;
+        }
+
+        if (!isset($this->settings['tiktok_enabled_events'])) {
+            return true;
+        }
+
+        if (isset($this->settings['tiktok_enabled_events'][$tiktok_event_name])) {
+            return !empty($this->settings['tiktok_enabled_events'][$tiktok_event_name]);
+        }
+
+        return true;
+    }
+
+    /**
+     * Build TikTok Events API payload with context and user data
+     *
+     * @param array $event_data
+     * @param WC_Order|null $order
+     * @return array|null
+     */
+    public function build_tiktok_event_payload($event_data, $order = null) {
+        if (empty($event_data['event_name'])) {
+            return null;
+        }
+
+        $event_name = $event_data['event_name'];
+        $tiktok_event_name = $this->map_to_tiktok_event_name($event_name);
+        if (empty($tiktok_event_name)) {
+            return null;
+        }
+
+        $event_id   = isset($event_data['event_id']) ? $event_data['event_id'] : PixelBeacon_Helpers::guidv4();
+        $source_url = isset($event_data['event_source_url']) ? $event_data['event_source_url'] : PixelBeacon_Helpers::get_current_url();
+        $referrer   = isset($event_data['referrer_url']) ? $event_data['referrer_url'] : '';
+
+        if ($order && is_a($order, 'WC_Order')) {
+            $user_data = $this->get_tiktok_user_data_from_order($order);
+        } else {
+            $user_data = $this->get_tiktok_user_data();
+        }
+
+        $custom_data = isset($event_data['custom_data']) ? $event_data['custom_data'] : array();
+        $properties  = $this->build_tiktok_properties($event_name, $custom_data, $order);
+
+        return array(
+            'event'      => $tiktok_event_name,
+            'event_id'   => $event_id,
+            'timestamp'  => gmdate('Y-m-d\TH:i:s\Z'),
+            'context'    => array(
+                'ip'         => PixelBeacon_Helpers::get_client_ip(),
+                'user_agent' => PixelBeacon_Helpers::get_user_agent(),
+                'page'       => array(
+                    'url'      => $source_url,
+                    'referrer' => $referrer,
+                ),
+                'user'       => $user_data,
+            ),
+            'properties' => $properties,
+        );
+    }
+
+    /**
+     * Get rich user data formatted for TikTok Events API (High EMQ)
+     *
+     * @return array
+     */
+    public function get_tiktok_user_data() {
+        $user_data = array(
+            'ttp'    => PixelBeacon_Helpers::ensure_ttp(),
+            'ttclid' => PixelBeacon_Helpers::ensure_ttclid(),
+        );
+
+        if (is_user_logged_in()) {
+            $current_user = wp_get_current_user();
+            if (!empty($current_user->user_email)) {
+                $user_data['email'] = PixelBeacon_Helpers::normalize_and_hash($current_user->user_email);
+            }
+            if (!empty($current_user->billing_phone)) {
+                $user_data['phone_number'] = PixelBeacon_Helpers::normalize_and_hash_phone($current_user->billing_phone);
+            }
+            $user_data['external_id'] = PixelBeacon_Helpers::normalize_and_hash((string) $current_user->ID);
+        } else {
+            $persisted = PixelBeacon_Helpers::get_persistence_user_data();
+            if (!empty($persisted['em'])) {
+                $user_data['email'] = PixelBeacon_Helpers::normalize_and_hash($persisted['em']);
+            }
+            if (!empty($persisted['ph'])) {
+                $user_data['phone_number'] = PixelBeacon_Helpers::normalize_and_hash_phone($persisted['ph']);
+            }
+            $user_data['external_id'] = PixelBeacon_Helpers::get_pbid();
+        }
+
+        // Add WooCommerce customer billing details if available in session
+        if (class_exists('WooCommerce') && function_exists('WC') && WC()->customer) {
+            $cust = WC()->customer;
+            $wc_email = $cust->get_billing_email();
+            $wc_phone = $cust->get_billing_phone();
+            if (!empty($wc_email) && empty($user_data['email'])) {
+                $user_data['email'] = PixelBeacon_Helpers::normalize_and_hash($wc_email);
+            }
+            if (!empty($wc_phone) && empty($user_data['phone_number'])) {
+                $user_data['phone_number'] = PixelBeacon_Helpers::normalize_and_hash_phone($wc_phone);
+            }
+        }
+
+        return array_filter($user_data, function ($v) {
+            return $v !== null && $v !== '';
+        });
+    }
+
+    /**
+     * Get TikTok user data from WooCommerce order (retrieves locked order meta for webhooks)
+     *
+     * @param WC_Order $order
+     * @return array
+     */
+    public function get_tiktok_user_data_from_order($order) {
+        $saved_cookies = PixelBeacon_Helpers::get_tiktok_cookies_from_order($order);
+        $user_data = array(
+            'ttp'    => !empty($saved_cookies['ttp']) ? $saved_cookies['ttp'] : PixelBeacon_Helpers::ensure_ttp(),
+            'ttclid' => !empty($saved_cookies['ttclid']) ? $saved_cookies['ttclid'] : PixelBeacon_Helpers::ensure_ttclid(),
+        );
+
+        $billing_email = $order->get_billing_email();
+        if (!empty($billing_email)) {
+            $user_data['email'] = PixelBeacon_Helpers::normalize_and_hash($billing_email);
+        }
+
+        $billing_phone = $order->get_billing_phone();
+        if (!empty($billing_phone)) {
+            $user_data['phone_number'] = PixelBeacon_Helpers::normalize_and_hash_phone($billing_phone);
+        }
+
+        $customer_id = $order->get_customer_id();
+        if (!empty($customer_id)) {
+            $user_data['external_id'] = PixelBeacon_Helpers::normalize_and_hash((string) $customer_id);
+        } else {
+            $user_data['external_id'] = PixelBeacon_Helpers::get_pbid();
+        }
+
+        return array_filter($user_data, function ($v) {
+            return $v !== null && $v !== '';
+        });
+    }
+
+    /**
+     * Format custom data into TikTok properties schema
+     *
+     * @param string $event_name
+     * @param array $custom_data
+     * @param WC_Order|null $order
+     * @return object
+     */
+    public function build_tiktok_properties($event_name, $custom_data = array(), $order = null) {
+        $properties = array();
+
+        if (isset($custom_data['value'])) {
+            $properties['value'] = (float) $custom_data['value'];
+        }
+        if (isset($custom_data['currency'])) {
+            $properties['currency'] = $custom_data['currency'];
+        }
+        $properties['content_type'] = isset($custom_data['content_type']) ? $custom_data['content_type'] : 'product';
+
+        // Format contents array
+        if (!empty($custom_data['contents']) && is_array($custom_data['contents'])) {
+            $tt_contents = array();
+            foreach ($custom_data['contents'] as $item) {
+                $entry = array(
+                    'content_id'   => isset($item['id']) ? (string) $item['id'] : (isset($item['content_id']) ? (string) $item['content_id'] : ''),
+                    'content_type' => 'product',
+                    'quantity'     => isset($item['quantity']) ? (int) $item['quantity'] : 1,
+                    'price'        => isset($item['item_price']) ? (float) $item['item_price'] : (isset($item['price']) ? (float) $item['price'] : 0),
+                );
+                if (!empty($item['content_name'])) {
+                    $entry['content_name'] = $item['content_name'];
+                }
+                if (!empty($item['content_category'])) {
+                    $entry['content_category'] = $item['content_category'];
+                }
+                $tt_contents[] = $entry;
+            }
+            $properties['contents'] = $tt_contents;
+        } elseif (!empty($custom_data['content_ids']) && is_array($custom_data['content_ids'])) {
+            $tt_contents = array();
+            foreach ($custom_data['content_ids'] as $cid) {
+                $tt_contents[] = array(
+                    'content_id'   => (string) $cid,
+                    'content_type' => 'product',
+                    'quantity'     => isset($custom_data['num_items']) ? (int) $custom_data['num_items'] : 1,
+                    'price'        => isset($custom_data['value']) ? (float) $custom_data['value'] : 0,
+                    'content_name' => isset($custom_data['content_name']) ? $custom_data['content_name'] : '',
+                );
+            }
+            $properties['contents'] = $tt_contents;
+        }
+
+        if (!empty($custom_data['search_string'])) {
+            $properties['query'] = $custom_data['search_string'];
+        }
+
+        if (!empty($custom_data['order_id'])) {
+            $properties['order_id'] = (string) $custom_data['order_id'];
+        }
+
+        return (object) $properties;
     }
     
     /**

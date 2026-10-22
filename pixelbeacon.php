@@ -2,8 +2,8 @@
 /**
  * Plugin Name: PixelBeacon for WooCommerce
  * Plugin URI: https://github.com/mdshukurmiah/pixelbeacon
- * Description: Professional Meta Pixel & Conversions API (CAPI) tracking for WooCommerce with real-time deduplication, Event Match Quality (EMQ), and server-side signals.
- * Version: 1.0.5
+ * Description: Professional Meta & TikTok Pixel with Conversions API (CAPI) and Events API tracking for WooCommerce with real-time deduplication, Event Match Quality (EMQ), and server-side signals.
+ * Version: 1.0.6
  * Author: Md Shukur Miah
  * Author URI: https://www.shukurs.com/
  * License: GPL v2 or later
@@ -21,7 +21,7 @@ if (!defined('ABSPATH')) {
 }
 
 // Define plugin constants
-define('PIXELBEACON_VERSION', '1.0.5');
+define('PIXELBEACON_VERSION', '1.0.6');
 define('PIXELBEACON_PLUGIN_URL', plugin_dir_url(__FILE__));
 define('PIXELBEACON_PLUGIN_PATH', plugin_dir_path(__FILE__));
 define('PIXELBEACON_PLUGIN_BASENAME', plugin_basename(__FILE__));
@@ -85,13 +85,16 @@ class PixelBeacon {
      * Initialize the plugin
      */
     private function init() {
+        // Declare WooCommerce HPOS (High-Performance Order Storage) compatibility early
+        add_action('before_woocommerce_init', array($this, 'declare_hpos_compatibility'));
+
         // Include required files
         $this->include_files();
         
         // Initialize components
         add_action('init', array($this, 'init_components'));
 
-        // Ensure Facebook cookies are set early
+        // Ensure Facebook & TikTok cookies are set early
         add_action('init', array($this, 'ensure_facebook_cookies'), 1);
 
         // Queue processing cron & daily log cleanup cron
@@ -137,7 +140,17 @@ class PixelBeacon {
 
         // Browser-side (Pixel) tracking
         add_action('wp_head', array($this, 'output_pixel_base_code'), 1);
+        add_action('wp_head', array($this, 'output_tiktok_base_code'), 3);
         add_action('wp_footer', array($this, 'output_browser_events'), 20);
+    }
+
+    /**
+     * Declare WooCommerce HPOS (High-Performance Order Storage) compatibility
+     */
+    public function declare_hpos_compatibility() {
+        if (class_exists('\Automattic\WooCommerce\Utilities\FeaturesUtil')) {
+            \Automattic\WooCommerce\Utilities\FeaturesUtil::declare_compatibility('custom_order_tables', __FILE__, true);
+        }
     }
     
     /**
@@ -162,7 +175,7 @@ class PixelBeacon {
         $this->event_tracker = new PixelBeacon_Event_Tracker($this->api_client);
 
         // Initialize REST API for non-blocking CAPI intake and cached pages
-        $this->rest_api = new PixelBeacon_REST_API($this->api_client);
+        $this->rest_api = new PixelBeacon_REST_API($this->api_client, $this->event_tracker);
         
         // Initialize admin (if in admin area)
         if (is_admin()) {
@@ -186,10 +199,12 @@ class PixelBeacon {
             return;
         }
 
-        // Lock Facebook cookies (_fbp, _fbc) into order meta during checkout
-        // Critical for payment gateway webhooks (PayPal, Stripe) to retain attribution
+        // Lock Facebook cookies (_fbp, _fbc) and TikTok cookies (_ttp, ttclid) into order meta during checkout
+        // Critical for payment gateway webhooks (PayPal, Stripe, bKash, Nagad) to retain attribution
         add_action('woocommerce_checkout_update_order_meta', 'PixelBeacon_Helpers::save_fb_cookies_to_order', 10, 1);
         add_action('woocommerce_store_api_checkout_update_order_meta', 'PixelBeacon_Helpers::save_fb_cookies_to_order', 10, 1);
+        add_action('woocommerce_checkout_update_order_meta', 'PixelBeacon_Helpers::save_tiktok_cookies_to_order', 10, 1);
+        add_action('woocommerce_store_api_checkout_update_order_meta', 'PixelBeacon_Helpers::save_tiktok_cookies_to_order', 10, 1);
 
         // Standard WooCommerce events
         add_action('template_redirect', array($this, 'maybe_track_initiate_checkout'));
@@ -220,7 +235,10 @@ class PixelBeacon {
         }
 
         $settings = PixelBeacon_Helpers::get_settings();
-        if (empty($settings['pixel_id'])) {
+        $fb_active = !empty($settings['pixel_id']);
+        $tt_active = !empty($settings['tiktok_enabled']) && !empty($settings['tiktok_pixel_id']);
+
+        if (!$fb_active && !$tt_active) {
             return;
         }
 
@@ -234,17 +252,43 @@ class PixelBeacon {
             true
         );
 
+        $tiktok_adv_matching = array();
+        if (is_user_logged_in()) {
+            $user = wp_get_current_user();
+            if (!empty($user->user_email)) {
+                $tiktok_adv_matching['email'] = PixelBeacon_Helpers::normalize_and_hash($user->user_email);
+            }
+            if (!empty($user->billing_phone)) {
+                $tiktok_adv_matching['phone_number'] = PixelBeacon_Helpers::normalize_and_hash_phone($user->billing_phone);
+            }
+            $tiktok_adv_matching['external_id'] = PixelBeacon_Helpers::normalize_and_hash((string) $user->ID);
+        } else {
+            $persisted = PixelBeacon_Helpers::get_persistence_user_data();
+            if (!empty($persisted['em'])) {
+                $tiktok_adv_matching['email'] = PixelBeacon_Helpers::normalize_and_hash($persisted['em']);
+            }
+            if (!empty($persisted['ph'])) {
+                $tiktok_adv_matching['phone_number'] = PixelBeacon_Helpers::normalize_and_hash_phone($persisted['ph']);
+            }
+            $tiktok_adv_matching['external_id'] = PixelBeacon_Helpers::get_pbid();
+        }
+
         $client_options = array(
-            'pixelId'             => esc_js($settings['pixel_id']),
-            'testEventCode'       => !empty($settings['test_event_code']) ? esc_js($settings['test_event_code']) : '',
-            'restUrl'             => esc_url_raw(rest_url('pixelbeacon/v1/event')),
-            'ajaxUrl'             => esc_url_raw(admin_url('admin-ajax.php')),
-            'dynamicOptionsUrl'   => esc_url_raw(rest_url('pixelbeacon/v1/dynamic-options')),
-            'fetchDynamicOptions' => true,
-            'cookieDomain'        => PixelBeacon_Helpers::get_cookie_domain(),
-            'currency'            => function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'USD',
-            'nonce'               => wp_create_nonce('pixelbeacon_event'),
-            'debug'               => !empty($settings['debug_mode']),
+            'pixelId'                => !empty($settings['pixel_id']) ? esc_js($settings['pixel_id']) : '',
+            'testEventCode'          => !empty($settings['test_event_code']) ? esc_js($settings['test_event_code']) : '',
+            'tiktokEnabled'          => $tt_active,
+            'tiktokPixelId'          => !empty($settings['tiktok_pixel_id']) ? esc_js($settings['tiktok_pixel_id']) : '',
+            'tiktokTestEventCode'    => !empty($settings['tiktok_test_event_code']) ? esc_js($settings['tiktok_test_event_code']) : '',
+            'tiktokEnabledEvents'    => !empty($settings['tiktok_enabled_events']) ? $settings['tiktok_enabled_events'] : array(),
+            'tiktokAdvancedMatching' => array_filter($tiktok_adv_matching),
+            'restUrl'                => esc_url_raw(rest_url('pixelbeacon/v1/event')),
+            'ajaxUrl'                => esc_url_raw(admin_url('admin-ajax.php')),
+            'dynamicOptionsUrl'      => esc_url_raw(rest_url('pixelbeacon/v1/dynamic-options')),
+            'fetchDynamicOptions'    => true,
+            'cookieDomain'           => PixelBeacon_Helpers::get_cookie_domain(),
+            'currency'               => function_exists('get_woocommerce_currency') ? get_woocommerce_currency() : 'USD',
+            'nonce'                  => wp_create_nonce('pixelbeacon_event'),
+            'debug'                  => !empty($settings['debug_mode']),
         );
 
         // Localize modern object pixelBeaconOptions, and provide fallback alias w3PixelOptions
@@ -464,12 +508,14 @@ class PixelBeacon {
     }
 
     /**
-     * Ensure Facebook cookies exist
+     * Ensure Facebook and TikTok cookies exist
      */
     public function ensure_facebook_cookies() {
         PixelBeacon_Helpers::ensure_fbp();
         PixelBeacon_Helpers::ensure_fbc();
         PixelBeacon_Helpers::ensure_pbid();
+        PixelBeacon_Helpers::ensure_ttp();
+        PixelBeacon_Helpers::ensure_ttclid();
     }
 
     /**
@@ -578,7 +624,9 @@ class PixelBeacon {
             $event_data['referrer_url'] = $referrer_url;
         }
 
-        if (isset($this->api_client)) {
+        if (isset($this->event_tracker)) {
+            $this->event_tracker->send_event($event_data);
+        } elseif (isset($this->api_client)) {
             $this->api_client->send_event($event_data);
         }
 
@@ -829,6 +877,65 @@ class PixelBeacon {
     }
 
     /**
+     * Output TikTok Pixel base code with Advanced Matching for browser tracking
+     */
+    public function output_tiktok_base_code() {
+        if (is_admin() || PixelBeacon_Helpers::is_bot_request()) {
+            return;
+        }
+
+        $settings = PixelBeacon_Helpers::get_settings();
+        if (empty($settings['tiktok_enabled']) || empty($settings['tiktok_pixel_id'])) {
+            return;
+        }
+
+        $pixel_id = esc_js($settings['tiktok_pixel_id']);
+        $pageview_enabled = !empty($settings['tiktok_enabled_events']['PageView']);
+
+        // Gather advanced matching data for TikTok browser init
+        $tiktok_adv_matching = array();
+        if (is_user_logged_in()) {
+            $user = wp_get_current_user();
+            if (!empty($user->user_email)) {
+                $tiktok_adv_matching['email'] = PixelBeacon_Helpers::normalize_and_hash($user->user_email);
+            }
+            if (!empty($user->billing_phone)) {
+                $tiktok_adv_matching['phone_number'] = PixelBeacon_Helpers::normalize_and_hash_phone($user->billing_phone);
+            }
+            $tiktok_adv_matching['external_id'] = PixelBeacon_Helpers::normalize_and_hash((string) $user->ID);
+        } else {
+            $persisted = PixelBeacon_Helpers::get_persistence_user_data();
+            if (!empty($persisted['em'])) {
+                $tiktok_adv_matching['email'] = PixelBeacon_Helpers::normalize_and_hash($persisted['em']);
+            }
+            if (!empty($persisted['ph'])) {
+                $tiktok_adv_matching['phone_number'] = PixelBeacon_Helpers::normalize_and_hash_phone($persisted['ph']);
+            }
+            $tiktok_adv_matching['external_id'] = PixelBeacon_Helpers::get_pbid();
+        }
+        $tiktok_adv_matching = array_filter($tiktok_adv_matching);
+        ?>
+        <!-- TikTok Pixel Base Code (PixelBeacon for WooCommerce) -->
+        <script>
+        !function (w, d, t) {
+          w.TiktokAnalyticsObject=t;var ttq=w[t]=w[t]||[];ttq.methods=["page","track","identify","instances","debug","on","off","once","ready","alias","group","enableCookie","disableCookie","holdConsent","revokeConsent","grantConsent"],ttq.setAndDefer=function(t,e){t[e]=function(){t.push([e].concat(Array.prototype.slice.call(arguments,0)))}};for(var i=0;i<ttq.methods.length;i++)ttq.setAndDefer(ttq,ttq.methods[i]);ttq.instance=function(t){for(
+          var e=ttq._i[t]||[],n=0;n<ttq.methods.length;n++)ttq.setAndDefer(e,ttq.methods[n]);return e},ttq.load=function(e,n){var r="https://analytics.tiktok.com/i18n/pixel/events.js",o=n&&n.partner;ttq._i=ttq._i||{},ttq._i[e]=[],ttq._i[e]._u=r,ttq._t=ttq._t||{},ttq._t[e]=+new Date,ttq._o=ttq._o||{},ttq._o[e]=n||{};n=document.createElement("script")
+          ;n.type="text/javascript",n.async=!0,n.src=r+"?sdkid="+e+"&lib="+t;e=document.getElementsByTagName("script")[0];e.parentNode.insertBefore(n,e)};
+
+          ttq.load('<?php echo esc_js($pixel_id); ?>');
+          <?php if (!empty($tiktok_adv_matching)): ?>
+          ttq.identify(<?php echo wp_json_encode($tiktok_adv_matching); ?>);
+          <?php endif; ?>
+          <?php if ($pageview_enabled): ?>
+          ttq.page();
+          <?php endif; ?>
+        }(window, document, 'ttq');
+        </script>
+        <!-- End TikTok Pixel Base Code -->
+        <?php
+    }
+
+    /**
      * Output browser-side events with matching parameters and event IDs
      */
     public function output_browser_events() {
@@ -837,7 +944,10 @@ class PixelBeacon {
         }
 
         $settings = PixelBeacon_Helpers::get_settings();
-        if (empty($settings['pixel_id'])) {
+        $fb_active = !empty($settings['pixel_id']);
+        $tt_active = !empty($settings['tiktok_enabled']) && !empty($settings['tiktok_pixel_id']);
+
+        if (!$fb_active && !$tt_active) {
             return;
         }
 
@@ -848,13 +958,15 @@ class PixelBeacon {
 
         $test_event_code = !empty($settings['test_event_code']) ? esc_js($settings['test_event_code']) : '';
         ?>
-        <!-- Facebook Pixel Events (PixelBeacon for WooCommerce) -->
+        <!-- PixelBeacon Browser Events (Facebook & TikTok) -->
         <script>
         (function () {
             var rawEvents = <?php echo wp_json_encode($events); ?> || [];
             if (!Array.isArray(rawEvents) || !rawEvents.length) return;
 
             var testCode = '<?php echo esc_js($test_event_code); ?>';
+            var fbActive = <?php echo $fb_active ? 'true' : 'false'; ?>;
+            var ttActive = <?php echo $tt_active ? 'true' : 'false'; ?>;
 
             for (var i = 0; i < rawEvents.length; i++) {
                 var evt = rawEvents[i] || {};
@@ -869,7 +981,8 @@ class PixelBeacon {
                     trackOpts.test_event_code = testCode;
                 }
 
-                if (typeof window.fbq === 'function') {
+                // Facebook Pixel tracking
+                if (fbActive && typeof window.fbq === 'function') {
                     if (Object.keys(trackOpts).length > 0) {
                         window.fbq('track', evt.event_name, params, trackOpts);
                     } else {
@@ -877,13 +990,24 @@ class PixelBeacon {
                     }
                     evt.browser_tracked = true;
                 }
+
+                // TikTok Pixel tracking with matching event_id for deduplication
+                if (ttActive && typeof window.ttq === 'object' && typeof window.ttq.track === 'function' && evt.tiktok_event_name) {
+                    var ttParams = (evt.tiktok_properties && typeof evt.tiktok_properties === 'object') ? evt.tiktok_properties : params;
+                    var ttOpts = {};
+                    if (evt.event_id) {
+                        ttOpts.event_id = evt.event_id;
+                    }
+                    window.ttq.track(evt.tiktok_event_name, ttParams, ttOpts);
+                    evt.tiktok_tracked = true;
+                }
             }
 
             window.pixelBeaconEvents = (window.pixelBeaconEvents || []).concat(rawEvents);
             window.w3PixelEvents = (window.w3PixelEvents || []).concat(rawEvents);
         })();
         </script>
-        <!-- End Facebook Pixel Events -->
+        <!-- End PixelBeacon Browser Events -->
         <?php
     }
 }

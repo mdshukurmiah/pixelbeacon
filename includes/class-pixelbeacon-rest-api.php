@@ -29,12 +29,19 @@ class PixelBeacon_REST_API {
     private $api_client;
 
     /**
+     * @var PixelBeacon_Event_Tracker|null
+     */
+    private $event_tracker;
+
+    /**
      * Constructor
      *
      * @param PixelBeacon_API_Client $api_client
+     * @param PixelBeacon_Event_Tracker|null $event_tracker
      */
-    public function __construct($api_client) {
+    public function __construct($api_client, $event_tracker = null) {
         $this->api_client = $api_client;
+        $this->event_tracker = $event_tracker;
         add_action('rest_api_init', array($this, 'register_routes'));
     }
 
@@ -226,8 +233,12 @@ class PixelBeacon_REST_API {
             $event_data['referrer_url'] = esc_url_raw($referrer_url);
         }
 
-        // Dispatch to Facebook Graph API
-        $response = $this->api_client->send_event($event_data);
+        // Dispatch to Facebook Graph API and TikTok Events API
+        if (isset($this->event_tracker)) {
+            $response = $this->event_tracker->send_event($event_data);
+        } else {
+            $response = $this->api_client->send_event($event_data);
+        }
 
         return new WP_REST_Response(array(
             'success'  => !is_wp_error($response),
@@ -258,40 +269,60 @@ class PixelBeacon_REST_API {
         }
 
         $advanced_matching = array();
+        $tiktok_adv_matching = array();
+
         if (is_user_logged_in()) {
             $user = wp_get_current_user();
             if (!empty($user->user_email)) {
-                $advanced_matching['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($user->user_email);
+                $hashed_email = PixelBeacon_Helpers::normalize_and_hash($user->user_email);
+                $advanced_matching['em'] = $hashed_email;
+                $tiktok_adv_matching['email'] = $hashed_email;
             }
             if (!empty($user->first_name)) {
-                $advanced_matching['fn'] = FBPixel_CAPI_Helpers::normalize_name($user->first_name);
+                $advanced_matching['fn'] = PixelBeacon_Helpers::normalize_name($user->first_name);
             }
             if (!empty($user->last_name)) {
-                $advanced_matching['ln'] = FBPixel_CAPI_Helpers::normalize_name($user->last_name);
+                $advanced_matching['ln'] = PixelBeacon_Helpers::normalize_name($user->last_name);
             }
-            $advanced_matching['external_id'] = FBPixel_CAPI_Helpers::normalize_and_hash((string) $user->ID);
+            if (!empty($user->billing_phone)) {
+                $hashed_phone = PixelBeacon_Helpers::normalize_and_hash_phone($user->billing_phone);
+                $advanced_matching['ph'] = $hashed_phone;
+                $tiktok_adv_matching['phone_number'] = $hashed_phone;
+            }
+            $ext_id = PixelBeacon_Helpers::normalize_and_hash((string) $user->ID);
+            $advanced_matching['external_id'] = $ext_id;
+            $tiktok_adv_matching['external_id'] = $ext_id;
         } else {
-            $persisted = FBPixel_CAPI_Helpers::get_persistence_user_data();
+            $persisted = PixelBeacon_Helpers::get_persistence_user_data();
             if (!empty($persisted['em'])) {
-                $advanced_matching['em'] = FBPixel_CAPI_Helpers::normalize_and_hash($persisted['em']);
+                $hashed_email = PixelBeacon_Helpers::normalize_and_hash($persisted['em']);
+                $advanced_matching['em'] = $hashed_email;
+                $tiktok_adv_matching['email'] = $hashed_email;
             }
             if (!empty($persisted['fn'])) {
-                $advanced_matching['fn'] = FBPixel_CAPI_Helpers::normalize_name($persisted['fn']);
+                $advanced_matching['fn'] = PixelBeacon_Helpers::normalize_name($persisted['fn']);
             }
             if (!empty($persisted['ln'])) {
-                $advanced_matching['ln'] = FBPixel_CAPI_Helpers::normalize_name($persisted['ln']);
+                $advanced_matching['ln'] = PixelBeacon_Helpers::normalize_name($persisted['ln']);
             }
             if (!empty($persisted['ph'])) {
-                $advanced_matching['ph'] = FBPixel_CAPI_Helpers::normalize_and_hash_phone($persisted['ph']);
+                $hashed_phone = PixelBeacon_Helpers::normalize_and_hash_phone($persisted['ph']);
+                $advanced_matching['ph'] = $hashed_phone;
+                $tiktok_adv_matching['phone_number'] = $hashed_phone;
             }
-            $advanced_matching['external_id'] = FBPixel_CAPI_Helpers::get_pbid();
+            $pbid = PixelBeacon_Helpers::get_pbid();
+            $advanced_matching['external_id'] = $pbid;
+            $tiktok_adv_matching['external_id'] = $pbid;
         }
 
         $response_data = array(
-            'advanced_matching' => $advanced_matching,
-            'fbp'               => FBPixel_CAPI_Helpers::ensure_fbp(),
-            'fbc'               => FBPixel_CAPI_Helpers::ensure_fbc(),
-            'pbid'              => FBPixel_CAPI_Helpers::get_pbid(),
+            'advanced_matching'        => $advanced_matching,
+            'tiktok_advanced_matching' => array_filter($tiktok_adv_matching),
+            'fbp'                      => PixelBeacon_Helpers::ensure_fbp(),
+            'fbc'                      => PixelBeacon_Helpers::ensure_fbc(),
+            'pbid'                     => PixelBeacon_Helpers::get_pbid(),
+            'ttp'                      => PixelBeacon_Helpers::ensure_ttp(),
+            'ttclid'                   => PixelBeacon_Helpers::ensure_ttclid(),
         );
 
         return new WP_REST_Response($response_data, 200);

@@ -21,6 +21,16 @@ class PixelBeacon_API_Client {
      * API version
      */
     const API_VERSION = 'v18.0';
+
+    /**
+     * TikTok Business API base URL
+     */
+    const TIKTOK_API_BASE_URL = 'https://business-api.tiktok.com';
+
+    /**
+     * TikTok Events API version
+     */
+    const TIKTOK_API_VERSION = 'v1.3';
     
     /**
      * Plugin settings
@@ -155,6 +165,115 @@ class PixelBeacon_API_Client {
     }
 
     /**
+     * Send events to TikTok Events API (Conversions API)
+     *
+     * Uses direct non-blocking HTTP POST to https://business-api.tiktok.com/open_api/v1.3/pixel/track/
+     *
+     * @param array $events Array of TikTok formatted event data
+     * @param bool $allow_queue Whether to queue failed events
+     * @param bool $blocking Whether request should block
+     * @return array|WP_Error Response data or error
+     */
+    public function send_tiktok_events($events, $allow_queue = true, $blocking = true) {
+        $settings = PixelBeacon_Helpers::get_settings();
+        if (empty($settings['tiktok_enabled']) || empty($settings['tiktok_pixel_id']) || empty($settings['tiktok_access_token'])) {
+            return new WP_Error('missing_tiktok_credentials', __('TikTok Pixel ID or Access Token is missing', 'pixelbeacon'));
+        }
+
+        $endpoint = sprintf(
+            '%s/open_api/%s/pixel/track/',
+            self::TIKTOK_API_BASE_URL,
+            self::TIKTOK_API_VERSION
+        );
+
+        $headers = array(
+            'Content-Type' => 'application/json',
+            'Access-Token' => $settings['tiktok_access_token'],
+        );
+
+        $results = array();
+        foreach ($events as $event) {
+            $body = array(
+                'pixel_code' => $settings['tiktok_pixel_id'],
+                'event'      => isset($event['event']) ? $event['event'] : 'PageView',
+                'event_id'   => isset($event['event_id']) ? $event['event_id'] : PixelBeacon_Helpers::guidv4(),
+                'timestamp'  => isset($event['timestamp']) ? $event['timestamp'] : gmdate('Y-m-d\TH:i:s\Z'),
+                'context'    => isset($event['context']) ? $event['context'] : array(),
+                'properties' => isset($event['properties']) && !empty($event['properties']) ? $event['properties'] : new \stdClass(),
+            );
+
+            if (!empty($settings['tiktok_test_event_code'])) {
+                $body['test_event_code'] = $settings['tiktok_test_event_code'];
+            }
+
+            $args = array(
+                'method'     => 'POST',
+                'headers'    => $headers,
+                'body'       => wp_json_encode($body),
+                'timeout'    => 30,
+                'blocking'   => (bool) $blocking,
+                'user-agent' => 'WordPress/' . get_bloginfo('version') . '; ' . get_bloginfo('url'),
+            );
+
+            if (!empty($settings['debug_mode'])) {
+                $this->log_request($endpoint . ' (TikTok)', $body, $args);
+            }
+
+            $response = wp_remote_post($endpoint, $args);
+
+            if (!$blocking) {
+                $results[] = array('status' => 'sent_async');
+                continue;
+            }
+
+            if (is_wp_error($response)) {
+                $this->log_error('TikTok API Request Failed', $response->get_error_message(), array($event));
+                if ($allow_queue) {
+                    $this->queue_event(array_merge($event, array('_platform' => 'tiktok')), $response->get_error_message());
+                }
+                return $response;
+            }
+
+            $response_code = wp_remote_retrieve_response_code($response);
+            $response_body = wp_remote_retrieve_body($response);
+            $decoded = json_decode($response_body, true);
+
+            if (!empty($settings['debug_mode'])) {
+                $this->log_response($response_code, $response_body, array($event));
+            }
+
+            $has_error = ($response_code >= 400) || (is_array($decoded) && isset($decoded['code']) && (int) $decoded['code'] !== 0);
+            if ($has_error) {
+                $error_message = $this->parse_tiktok_error_response($response_body);
+                $this->log_error('TikTok API Error', $error_message, array($event));
+                $is_retryable = ($response_code >= 500 || $response_code === 429);
+                if ($allow_queue && $is_retryable) {
+                    $this->queue_event(array_merge($event, array('_platform' => 'tiktok')), $error_message);
+                }
+                return new WP_Error('tiktok_api_error', $error_message);
+            }
+
+            $results[] = array(
+                'status_code' => $response_code,
+                'body'        => $decoded,
+            );
+        }
+
+        return count($results) === 1 ? $results[0] : $results;
+    }
+
+    /**
+     * Send a single event to TikTok Events API
+     *
+     * @param array $event_data Single event data
+     * @param bool $blocking Whether request should block
+     * @return array|WP_Error Response data or error
+     */
+    public function send_tiktok_event($event_data, $blocking = true) {
+        return $this->send_tiktok_events(array($event_data), true, $blocking);
+    }
+
+    /**
      * Queue failed events for retry
      *
      * @param array $event_data
@@ -216,7 +335,14 @@ class PixelBeacon_API_Client {
                 continue;
             }
 
-            $result = $this->send_events(array($event_data), false);
+            $is_tiktok = !empty($event_data['_platform']) && $event_data['_platform'] === 'tiktok';
+            if ($is_tiktok) {
+                unset($event_data['_platform']);
+                $result = $this->send_tiktok_event($event_data, true);
+            } else {
+                $result = $this->send_events(array($event_data), false);
+            }
+
             if (!is_wp_error($result)) {
                 // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching -- Custom queue table cleanup.
                 $wpdb->delete($table_name, array('id' => (int) $row['id']), array('%d'));
@@ -269,6 +395,30 @@ class PixelBeacon_API_Client {
         }
         
         return __('Unknown API error occurred', 'pixelbeacon');
+    }
+
+    /**
+     * Parse error response from TikTok API
+     *
+     * @param string $response_body Response body
+     * @return string Error message
+     */
+    private function parse_tiktok_error_response($response_body) {
+        $decoded = json_decode($response_body, true);
+
+        if (isset($decoded['message']) && !empty($decoded['message'])) {
+            $msg = $decoded['message'];
+            if (isset($decoded['code'])) {
+                $msg .= ' (Code ' . $decoded['code'] . ')';
+            }
+            return $msg;
+        }
+
+        if (isset($decoded['error']['message'])) {
+            return $decoded['error']['message'];
+        }
+
+        return __('Unknown TikTok API error occurred', 'pixelbeacon');
     }
     
     /**
@@ -409,6 +559,88 @@ class PixelBeacon_API_Client {
         $this->settings = $orig_settings;
 
         return $result;
+    }
+
+    /**
+     * Test TikTok API connection with a test event
+     *
+     * @param string $pixel_id
+     * @param string $access_token
+     * @return array|WP_Error
+     */
+    public function test_tiktok_connection($pixel_id = '', $access_token = '') {
+        $settings = PixelBeacon_Helpers::get_settings();
+        $pixel_id = !empty($pixel_id) ? trim($pixel_id) : (!empty($settings['tiktok_pixel_id']) ? $settings['tiktok_pixel_id'] : '');
+        $access_token = !empty($access_token) ? trim($access_token) : (!empty($settings['tiktok_access_token']) ? $settings['tiktok_access_token'] : '');
+
+        if (empty($pixel_id) || empty($access_token)) {
+            return new WP_Error('missing_tiktok_credentials', __('TikTok Pixel ID or Access Token is missing', 'pixelbeacon'));
+        }
+
+        $endpoint = sprintf(
+            '%s/open_api/%s/pixel/track/',
+            self::TIKTOK_API_BASE_URL,
+            self::TIKTOK_API_VERSION
+        );
+
+        $headers = array(
+            'Content-Type' => 'application/json',
+            'Access-Token' => $access_token,
+        );
+
+        $body = array(
+            'pixel_code' => $pixel_id,
+            'event'      => 'PageView',
+            'event_id'   => PixelBeacon_Helpers::guidv4(),
+            'timestamp'  => gmdate('Y-m-d\TH:i:s\Z'),
+            'context'    => array(
+                'ip'         => PixelBeacon_Helpers::get_client_ip(),
+                'user_agent' => PixelBeacon_Helpers::get_user_agent(),
+                'page'       => array(
+                    'url'      => home_url('/'),
+                    'referrer' => '',
+                ),
+                'user'       => array_filter(array(
+                    'external_id' => PixelBeacon_Helpers::get_pbid(),
+                    'ttp'         => PixelBeacon_Helpers::ensure_ttp(),
+                )),
+            ),
+            'properties' => (object) array(
+                'test_connection' => true,
+            ),
+        );
+
+        if (!empty($settings['tiktok_test_event_code'])) {
+            $body['test_event_code'] = $settings['tiktok_test_event_code'];
+        }
+
+        $args = array(
+            'method'     => 'POST',
+            'headers'    => $headers,
+            'body'       => wp_json_encode($body),
+            'timeout'    => 20,
+            'blocking'   => true,
+            'user-agent' => 'WordPress/' . get_bloginfo('version') . '; ' . get_bloginfo('url'),
+        );
+
+        $response = wp_remote_post($endpoint, $args);
+        if (is_wp_error($response)) {
+            return $response;
+        }
+
+        $response_code = wp_remote_retrieve_response_code($response);
+        $response_body = wp_remote_retrieve_body($response);
+        $decoded = json_decode($response_body, true);
+
+        if ($response_code >= 400 || (is_array($decoded) && isset($decoded['code']) && (int) $decoded['code'] !== 0)) {
+            $error_message = $this->parse_tiktok_error_response($response_body);
+            return new WP_Error('tiktok_api_error', $error_message);
+        }
+
+        return array(
+            'status_code' => $response_code,
+            'body'        => $decoded,
+        );
     }
 
     /**

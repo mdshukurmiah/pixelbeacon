@@ -5,11 +5,11 @@
 **Requires at least:** 6.2  
 **Tested up to:** 7.1  
 **Requires PHP:** 7.4  
-**Stable tag:** 1.0.5  
+**Stable tag:** 1.0.6  
 **License:** GPLv2 or later  
 **License URI:** [https://www.gnu.org/licenses/gpl-2.0.html](https://www.gnu.org/licenses/gpl-2.0.html)  
 
-Meta Pixel and Conversions API (CAPI) tracking for WooCommerce with deduplication, high Event Match Quality (EMQ), and server-side signals.
+Meta Pixel & Conversions API (CAPI) and TikTok Pixel & Events API tracking for WooCommerce with deduplication, high Event Match Quality (EMQ), and server-side signals.
 
 ---
 
@@ -60,6 +60,17 @@ No. Every browser and server event pair is tagged with matching `event_id` and a
 ---
 
 ## Changelog
+
+### 1.0.6
+- **New: TikTok Pixel & Events API Integration**: Added complete hybrid browser and server-side tracking cloned and optimized from PixelYourSite Pro specifications with native `wp_remote_post` implementation.
+- **New: Tabbed Admin Settings**: Added modern tabbed interface separating Facebook and TikTok configurations with active-tab persistence.
+- **New: TikTok Event Mapping**: Built-in support for `CompletePayment` (Purchase), `AddToCart`, `InitiateCheckout`, `ViewContent`, `AddPaymentInfo`, `Search`, `AddToWishlist`, `CompleteRegistration`, `Contact`, and `PageView`.
+- **New: TikTok Deduplication**: Synchronized RFC UUIDv4 `event_id` generation between browser pixel (`ttq.track`) and server-side Events API.
+- **New: TikTok First-Party Cookies & Attribution**: Added automated `_ttp` 1st-party cookie generation (13-month lifetime) and `ttclid` capture (90-day lifetime).
+- **New: Order Meta Locking**: Locked TikTok and Facebook cookies into order metadata (`_pixelbeacon_tiktok_cookie`) to maintain attribution across external payment gateway webhooks.
+- **Improved: Phone Number Normalization**: Added E.164 phone normalization with local Bangladesh mobile detection (`01X` -> `+8801X`) for higher EMQ across both Meta and TikTok.
+- **New: Dedicated TikTok Connection Test Tool**: Verify TikTok Pixel ID and Events API Access Token credentials directly from the admin interface.
+- **New: WooCommerce HPOS Compatibility**: Declared official compatibility for WooCommerce High-Performance Order Storage (HPOS).
 
 ### 1.0.5
 - Renamed plugin to PixelBeacon for WooCommerce.

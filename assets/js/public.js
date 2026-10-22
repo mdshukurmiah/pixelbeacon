@@ -1,8 +1,9 @@
 /**
  * PixelBeacon for WooCommerce Client Tracking Script
  *
- * Implements non-blocking CAPI dispatch (sendBeacon/fetch),
- * form data persistence for high EMQ, and AJAX Add to Cart synchronization.
+ * Implements non-blocking CAPI dispatch (sendBeacon/fetch/ajax),
+ * form data persistence for high EMQ, synchronized AJAX Add to Cart,
+ * and dual-platform tracking for Meta Pixel and TikTok Pixel with RFC UUIDv4 deduplication.
  */
 
 (function ($) {
@@ -15,11 +16,23 @@
 
     var PixelBeaconTracker = {
         init: function () {
+            this.initTikTokBase();
             this.initFormPersistence();
             this.initAjaxAddToCart();
             this.initClientEvents();
             this.processQueuedEvents();
             this.fetchDynamicOptions();
+        },
+
+        // Ensure TikTok Pixel is initialized client-side if loaded asynchronously
+        initTikTokBase: function () {
+            if (!options.tiktokEnabled || !options.tiktokPixelId) return;
+
+            if (options.tiktokAdvancedMatching && window.ttq && typeof window.ttq.identify === 'function') {
+                try {
+                    window.ttq.identify(options.tiktokAdvancedMatching);
+                } catch (e) { }
+            }
         },
 
         // Helper to generate UUIDv4 client-side
@@ -110,7 +123,8 @@
             });
         },
 
-        // 2. Asynchronous CAPI Dispatcher (sendBeacon -> fetch -> jQuery.ajax)
+        // 2. Asynchronous Server Dispatcher (sendBeacon -> fetch -> jQuery.ajax)
+        // Dispatches to server-side endpoint which forwards to both Meta CAPI and TikTok Events API
         sendServerEvent: function (eventName, eventId, customData) {
             var restUrl = options.restUrl || '/wp-json/pixelbeacon/v1/event';
             var payload = {
@@ -134,7 +148,7 @@
                     var sent = navigator.sendBeacon(restUrl, formData);
                     if (sent) {
                         if (options.debug) {
-                            console.log('[PixelBeacon] Sent via sendBeacon:', payload);
+                            console.log('[PixelBeacon] Sent server event via sendBeacon:', payload);
                         }
                         return;
                     }
@@ -177,7 +191,7 @@
                         }
                         sendAjaxFallback();
                     } else if (options.debug) {
-                        console.log('[PixelBeacon] Sent via fetch status:', res.status);
+                        console.log('[PixelBeacon] Sent server event via fetch status:', res.status);
                     }
                 }).catch(function (err) {
                     if (options.debug) {
@@ -205,10 +219,10 @@
                 var params = (evt.custom_data && typeof evt.custom_data === 'object' && !Array.isArray(evt.custom_data)) ? evt.custom_data : {};
                 var eventId = evt.event_id || self.guidv4();
 
-                // Fire browser Pixel only if not already tracked inline
-                if (!evt.browser_tracked && window.fbq) {
+                // Fire Facebook Pixel only if not already tracked inline
+                if (!evt.browser_tracked && window.fbq && options.pixelId) {
                     if (options.debug) {
-                        console.log('[PixelBeacon] Firing Pixel Event:', evt.event_name, params, 'eventID:', eventId);
+                        console.log('[PixelBeacon] Firing Facebook Pixel Event:', evt.event_name, params, 'eventID:', eventId);
                     }
                     var trackOpts = { eventID: eventId };
                     if (options.testEventCode) {
@@ -218,7 +232,18 @@
                     evt.browser_tracked = true;
                 }
 
-                // Asynchronously dispatch to CAPI if flagged for client relay
+                // Fire TikTok Pixel with identical event_id deduplication
+                if (!evt.tiktok_tracked && options.tiktokEnabled && window.ttq && typeof window.ttq.track === 'function' && evt.tiktok_event_name) {
+                    var ttParams = (evt.tiktok_properties && typeof evt.tiktok_properties === 'object') ? evt.tiktok_properties : params;
+                    var ttOpts = { event_id: eventId };
+                    if (options.debug) {
+                        console.log('[PixelBeacon] Firing TikTok Pixel Event:', evt.tiktok_event_name, ttParams, 'event_id:', eventId);
+                    }
+                    window.ttq.track(evt.tiktok_event_name, ttParams, ttOpts);
+                    evt.tiktok_tracked = true;
+                }
+
+                // Asynchronously dispatch to server API if flagged for client relay
                 if (evt.send_to_capi && !evt.capi_dispatched) {
                     evt.capi_dispatched = true;
                     self.sendServerEvent(evt.event_name, eventId, params);
@@ -237,9 +262,10 @@
                 // Priority 1: Use server-synchronized event data from cart fragments
                 var serverEvt = fragments && (fragments.pixelbeacon_event || fragments.w3_fbpixel_event);
                 if (serverEvt) {
-                    if (window.fbq && serverEvt.event_name && serverEvt.event_id) {
+                    // Facebook Pixel tracking
+                    if (window.fbq && serverEvt.event_name && serverEvt.event_id && options.pixelId) {
                         if (options.debug) {
-                            console.log('[PixelBeacon] AJAX AddToCart Pixel (synchronized with CAPI):', serverEvt);
+                            console.log('[PixelBeacon] AJAX AddToCart Facebook Pixel (synchronized with CAPI):', serverEvt);
                         }
                         var syncOpts = { eventID: serverEvt.event_id };
                         if (options.testEventCode) {
@@ -247,11 +273,23 @@
                         }
                         fbq('track', serverEvt.event_name, serverEvt.custom_data || {}, syncOpts);
                     }
-                    // Server already sent CAPI with this exact event_id, so avoid duplicate CAPI dispatch
+
+                    // TikTok Pixel tracking with matching event_id
+                    if (options.tiktokEnabled && window.ttq && typeof window.ttq.track === 'function' && serverEvt.event_id) {
+                        var ttName = serverEvt.tiktok_event_name || 'AddToCart';
+                        var ttParams = serverEvt.tiktok_properties || serverEvt.custom_data || {};
+                        var ttOpts = { event_id: serverEvt.event_id };
+                        if (options.debug) {
+                            console.log('[PixelBeacon] AJAX AddToCart TikTok Pixel (synchronized with CAPI):', ttName, ttParams, ttOpts);
+                        }
+                        window.ttq.track(ttName, ttParams, ttOpts);
+                    }
+
+                    // Server already dispatched CAPI with this exact event_id
                     return;
                 }
 
-                // Fallback for custom AJAX implementations without standard fragments
+                // Fallback for custom AJAX implementations without standard cart fragments
                 if (!$button || !$button.length) return;
 
                 var productId = $button.data('product_id') || $button.attr('data-product_id') || '';
@@ -264,9 +302,10 @@
                     num_items: parseInt(quantity, 10) || 1
                 };
 
-                if (window.fbq) {
+                // Facebook Pixel fallback
+                if (window.fbq && options.pixelId) {
                     if (options.debug) {
-                        console.log('[PixelBeacon] AJAX AddToCart Pixel Fallback:', customData, 'eventID:', eventId);
+                        console.log('[PixelBeacon] AJAX AddToCart Facebook Fallback:', customData, 'eventID:', eventId);
                     }
                     var fbOpts = { eventID: eventId };
                     if (options.testEventCode) {
@@ -275,7 +314,23 @@
                     fbq('track', 'AddToCart', customData, fbOpts);
                 }
 
-                // Asynchronously dispatch fallback to CAPI
+                // TikTok Pixel fallback
+                if (options.tiktokEnabled && window.ttq && typeof window.ttq.track === 'function') {
+                    var ttFallbackParams = {
+                        contents: [{
+                            content_id: String(productId),
+                            content_type: 'product',
+                            quantity: parseInt(quantity, 10) || 1
+                        }],
+                        content_type: 'product'
+                    };
+                    if (options.debug) {
+                        console.log('[PixelBeacon] AJAX AddToCart TikTok Fallback:', ttFallbackParams, 'event_id:', eventId);
+                    }
+                    window.ttq.track('AddToCart', ttFallbackParams, { event_id: eventId });
+                }
+
+                // Asynchronously dispatch fallback to server APIs
                 self.sendServerEvent('AddToCart', eventId, customData);
             });
         },
@@ -296,11 +351,28 @@
                     currency: options.currency || 'USD'
                 };
 
-                if (window.fbq) {
+                // Facebook
+                if (window.fbq && options.pixelId) {
                     var trackOpts = { eventID: eventId };
                     if (options.testEventCode) trackOpts.test_event_code = options.testEventCode;
                     fbq('track', 'CustomizeProduct', params, trackOpts);
                 }
+
+                // TikTok (mapped to ViewContent with variation details)
+                if (options.tiktokEnabled && window.ttq && typeof window.ttq.track === 'function') {
+                    window.ttq.track('ViewContent', {
+                        contents: [{
+                            content_id: String(variation.variation_id),
+                            content_name: params.content_name,
+                            content_type: 'product',
+                            price: params.value
+                        }],
+                        content_type: 'product',
+                        value: params.value,
+                        currency: params.currency
+                    }, { event_id: eventId });
+                }
+
                 self.sendServerEvent('CustomizeProduct', eventId, params);
             });
 
@@ -316,11 +388,25 @@
                     content_type: 'product'
                 };
 
-                if (window.fbq) {
+                // Facebook
+                if (window.fbq && options.pixelId) {
                     var trackOpts = { eventID: eventId };
                     if (options.testEventCode) trackOpts.test_event_code = options.testEventCode;
                     fbq('track', 'AddToWishlist', params, trackOpts);
                 }
+
+                // TikTok
+                if (options.tiktokEnabled && window.ttq && typeof window.ttq.track === 'function') {
+                    window.ttq.track('AddToWishlist', {
+                        contents: [{
+                            content_id: String(pid),
+                            content_name: params.content_name,
+                            content_type: 'product'
+                        }],
+                        content_type: 'product'
+                    }, { event_id: eventId });
+                }
+
                 self.sendServerEvent('AddToWishlist', eventId, params);
             });
 
@@ -333,11 +419,20 @@
                     payment_method: method
                 };
 
-                if (window.fbq) {
+                // Facebook
+                if (window.fbq && options.pixelId) {
                     var trackOpts = { eventID: eventId };
                     if (options.testEventCode) trackOpts.test_event_code = options.testEventCode;
                     fbq('track', 'AddPaymentInfo', params, trackOpts);
                 }
+
+                // TikTok
+                if (options.tiktokEnabled && window.ttq && typeof window.ttq.track === 'function') {
+                    window.ttq.track('AddPaymentInfo', {
+                        payment_method: method
+                    }, { event_id: eventId });
+                }
+
                 self.sendServerEvent('AddPaymentInfo', eventId, params);
             });
         },
@@ -351,7 +446,10 @@
                 fetch(url).then(function (res) {
                     return res.json();
                 }).then(function (data) {
-                    if (data && data.advanced_matching) {
+                    if (!data) return;
+
+                    // Facebook dynamic advanced matching
+                    if (data.advanced_matching) {
                         options.advancedMatching = $.extend({}, options.advancedMatching || {}, data.advanced_matching);
 
                         if (window.fbq && options.pixelId) {
@@ -363,15 +461,20 @@
                                     return String(p.id) === String(options.pixelId);
                                 });
                             } else if (window.fbq.loaded) {
-                                // Base code loaded in <head> already initialized the pixel
                                 isInitialized = true;
                             }
 
-                            // Only call fbq('init') if not already initialized to avoid Duplicate Pixel ID console error
                             if (!isInitialized) {
                                 fbq('init', options.pixelId, data.advanced_matching);
                             }
                         }
+                    }
+
+                    // TikTok dynamic advanced matching
+                    if (data.tiktok_advanced_matching && options.tiktokEnabled && window.ttq && typeof window.ttq.identify === 'function') {
+                        try {
+                            window.ttq.identify(data.tiktok_advanced_matching);
+                        } catch (e) { }
                     }
                 }).catch(function () { });
             }
